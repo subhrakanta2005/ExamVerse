@@ -91,19 +91,13 @@ async def delete_exam(
     db: Session = Depends(get_db),
     _: models.User = Depends(get_current_admin)
 ):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
+    # Verify exam exists
+    exists = db.execute(text("SELECT id FROM exams WHERE id = :eid"), {"eid": exam_id}).first()
+    if not exists:
         raise HTTPException(status_code=404, detail="Exam not found")
     
     try:
-        # Raw SQL to delete in correct FK order
-        db.execute(text("""
-            DELETE FROM answers
-            WHERE attempt_id IN (
-                SELECT id FROM attempts WHERE exam_id = :eid
-            )
-        """), {"eid": exam_id})
-        
+        db.execute(text("DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id = :eid)"), {"eid": exam_id})
         db.execute(text("DELETE FROM results WHERE exam_id = :eid"), {"eid": exam_id})
         db.execute(text("DELETE FROM attempts WHERE exam_id = :eid"), {"eid": exam_id})
         db.execute(text("DELETE FROM exam_assignments WHERE exam_id = :eid"), {"eid": exam_id})
@@ -111,7 +105,6 @@ async def delete_exam(
         db.execute(text("DELETE FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id = :eid)"), {"eid": exam_id})
         db.execute(text("DELETE FROM sections WHERE exam_id = :eid"), {"eid": exam_id})
         db.execute(text("DELETE FROM exams WHERE id = :eid"), {"eid": exam_id})
-        
         db.commit()
     except Exception as e:
         db.rollback()
