@@ -121,7 +121,7 @@ export default function SyllabusUpload() {
       if (config.exam_title) formData.append("exam_title", config.exam_title);
       if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
 
-      const { data } = await api.post("/api/syllabus/generate", formData, {
+      const { data } = await api.post("/api/syllabus/upload-and-generate", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
