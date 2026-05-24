@@ -114,6 +114,12 @@ class QuestionOut(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     options: List[OptionOut] = []
 
+    @validator('metadata', pre=True, always=True)
+    def coerce_metadata(cls, v):
+        if isinstance(v, dict):
+            return v
+        return None
+
     class Config:
         from_attributes = True
 
@@ -127,6 +133,12 @@ class QuestionOutCandidate(BaseModel):
     media_url: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     options: List[OptionOutCandidate] = []
+
+    @validator('metadata', pre=True, always=True)
+    def coerce_metadata(cls, v):
+        if isinstance(v, dict):
+            return v
+        return None
 
     class Config:
         from_attributes = True
