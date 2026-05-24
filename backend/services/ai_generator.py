@@ -68,7 +68,9 @@ _STRUCTURAL_LABELS = re.compile(
     re.IGNORECASE,
 )
 
-# Matches option lines like:  (A) text  |  A) text  |  A. text  |  a) text
+# Matches option lines like:
+#   (A) text  |  A) text  |  A. text  |  a) text  ← standard
+#   (a) text  ← lowercase PDF format (OSSSC bank)
 _OPTION_RE = re.compile(r'^\s*[\(\[]?([A-Da-d])[\)\]\.]\s+(.+)', re.IGNORECASE)
 
 # Matches question starters like:  Q1. | Q1) | 1. | 1) | Question 1.
@@ -77,9 +79,14 @@ _QUESTION_START_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Matches a declared answer line: "Answer: A" or "Correct answer: B"
+# Matches answer lines in ALL formats from PDFs and plain text:
+#   Answer: A                ← plain letter
+#   Answer: (a)              ← parenthesised
+#   Answer: (a) Kalinga      ← letter + text (PDF extraction format)
+#   ✓ Answer: (a) Kalinga    ← checkmark prefix (PDF rendered format)
+#   Correct answer: B
 _ANSWER_LINE_RE = re.compile(
-    r'^\s*(?:correct\s+)?answer\s*[:\-]\s*([A-Da-d])',
+    r'^\s*[\u2713\u221a]?\s*(?:correct\s+)?answer\s*[:\-]\s*[\(\[]?([A-Da-d])[\)\]]?(?:\s+.*)?$',
     re.IGNORECASE,
 )
 
