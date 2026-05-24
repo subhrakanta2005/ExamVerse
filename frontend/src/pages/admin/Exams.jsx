@@ -80,17 +80,17 @@ export default function AdminExams() {
                     <td className="px-4 py-4 text-slate-400 text-sm font-mono">{exam.total_marks}</td>
                     <td className="px-4 py-4 text-slate-400 text-sm">{exam.section_count ?? '—'}</td>
                     <td className="px-4 py-4">
-                      <span className={exam.is_published ? 'badge-green' : 'badge-gray'}>
-                        {exam.is_published ? 'Published' : 'Draft'}
+                      <span className={(exam.is_active && exam.is_public) ? 'badge-green' : exam.is_active ? 'badge-blue' : 'badge-gray'}>
+                        {(exam.is_active && exam.is_public) ? 'Published' : exam.is_active ? 'Active' : 'Draft'}
                       </span>
                     </td>
                     <td className="px-4 py-4 text-slate-500 text-xs">
-                      {exam.available_from
-                        ? new Date(exam.available_from).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
-                        : 'Always'}
-                      {exam.available_until
-                        ? ` – ${new Date(exam.available_until).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}`
-                        : ''}
+                      {exam.start_time
+  ? new Date(exam.start_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
+  : 'Always'}
+{exam.end_time
+  ? ` – ${new Date(exam.end_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}`
+  : ''}
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">
