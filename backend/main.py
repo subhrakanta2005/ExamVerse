@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
 from routers import syllabus
+from routers.evaluation import router as evaluation_router
 
 load_dotenv()
 
@@ -44,6 +45,7 @@ app.include_router(attempts.router, prefix="/api/attempts", tags=["Attempts"])
 app.include_router(results.router, prefix="/api/results", tags=["Results"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(syllabus.router, prefix="/api/syllabus", tags=["Syllabus & AI Generation"])
+app.include_router(evaluation_router, prefix="/api/evaluation", tags=["evaluation"])
 
 
 @app.get("/")
