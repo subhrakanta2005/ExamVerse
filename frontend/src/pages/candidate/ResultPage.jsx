@@ -123,7 +123,7 @@ function StatCard({ label, value, sub, color = "text-slate-800" }) {
 export default function ResultPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { attemptId } = useParams();   // present when route is /result/:id
+  const { attemptId } = useParams();   // present when route is /result/:attemptId
 
   const [rawResult, setRawResult] = useState(
     // Prefer state passed from submit flow; fall back to API fetch
@@ -145,7 +145,7 @@ export default function ResultPage() {
       .then(r => setRawResult(r.data))
       .catch(() => setFetchError("Result not found, or it hasn't been published yet."))
       .finally(() => setLoading(false));
-  }, [id]); // eslint-disable-line
+  }, [attemptId]); // eslint-disable-line
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {
