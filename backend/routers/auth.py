@@ -14,7 +14,7 @@ from utils.auth import (
 router = APIRouter()
 
 RESET_TOKEN_EXPIRE_HOURS = 2
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("https://exam-verse-np738pawm-subhrakantbehera8699-3748s-projects.vercel.app")
 
 
 def send_reset_email_bg(email: str, token: str, frontend_url: str):
