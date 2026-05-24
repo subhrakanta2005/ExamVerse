@@ -94,7 +94,7 @@ export default function ExamPage() {
         return;
       }
       try {
-        const res = await api.post("/evaluation/start", {
+        const res = await api.post("/api/evaluation/start", {
           exam,
           candidate_name: candidateName || "Candidate",
         });
@@ -126,7 +126,7 @@ export default function ExamPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await api.post("/evaluation/answer", {
+      const res = await api.post("/api/evaluation/answer", {
         session_id:   sessionId,
         question_idx: currentIdx,
         answer:       ans,
@@ -159,7 +159,7 @@ export default function ExamPage() {
     clearTimeout(timerRef.current);
     setFinishing(true);
     try {
-      const res = await api.post(`/evaluation/finish/${sessionId}`);
+      const res = await api.post(`/api/evaluation/finish/${sessionId}`);
       navigate("/exam/result", { state: { result: res.data } });
     } catch (e) {
       setError("Failed to submit exam. Please try again.");
