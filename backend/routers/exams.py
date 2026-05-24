@@ -221,3 +221,17 @@ async def get_exam(
     _: models.User = Depends(get_current_admin)
 ):
     return get_exam_or_404(exam_id, db)
+
+@router.delete("/admin/nuke-broken-exams")
+async def nuke_exams(db: Session = Depends(get_db), _=Depends(get_current_admin)):
+    from sqlalchemy import text
+    db.execute(text("DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id IN (3,5))"))
+    db.execute(text("DELETE FROM results WHERE exam_id IN (3,5)"))
+    db.execute(text("DELETE FROM attempts WHERE exam_id IN (3,5)"))
+    db.execute(text("DELETE FROM exam_assignments WHERE exam_id IN (3,5)"))
+    db.execute(text("DELETE FROM options WHERE question_id IN (SELECT id FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id IN (3,5)))"))
+    db.execute(text("DELETE FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id IN (3,5))"))
+    db.execute(text("DELETE FROM sections WHERE exam_id IN (3,5)"))
+    db.execute(text("DELETE FROM exams WHERE id IN (3,5)"))
+    db.commit()
+    return {"message": "Done"}
