@@ -84,20 +84,40 @@ async def add_section(
     return section
 
 
-@router.delete("/{exam_id}/sections/{section_id}")
-async def delete_section(
-    exam_id: int, section_id: int,
+@router.delete("/{exam_id}")
+async def delete_exam(
+    exam_id: int,
     db: Session = Depends(get_db),
     _: models.User = Depends(get_current_admin)
 ):
-    section = db.query(models.Section).filter(
-        models.Section.id == section_id, models.Section.exam_id == exam_id
-    ).first()
-    if not section:
-        raise HTTPException(status_code=404, detail="Section not found")
-    db.delete(section)
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    
+    # Delete child records first to avoid FK constraint violations
+    attempt_ids = db.query(models.Attempt.id).filter(
+        models.Attempt.exam_id == exam_id
+    ).subquery()
+    
+    db.query(models.Answer).filter(
+        models.Answer.attempt_id.in_(attempt_ids)
+    ).delete(synchronize_session=False)
+    
+    db.query(models.Result).filter(
+        models.Result.exam_id == exam_id
+    ).delete(synchronize_session=False)
+    
+    db.query(models.Attempt).filter(
+        models.Attempt.exam_id == exam_id
+    ).delete(synchronize_session=False)
+    
+    db.query(models.ExamAssignment).filter(
+        models.ExamAssignment.exam_id == exam_id
+    ).delete(synchronize_session=False)
+    
+    db.delete(exam)
     db.commit()
-    return {"message": "Section deleted"}
+    return {"message": "Exam deleted"}
 
 
 # ── Assign exam to users ─────────────────────────────────────────────────────
