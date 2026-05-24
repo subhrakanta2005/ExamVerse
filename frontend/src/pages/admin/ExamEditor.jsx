@@ -170,11 +170,11 @@ export default function AdminExamEditor() {
   const isEdit = Boolean(examId)
 
   const [form, setForm] = useState({
-    title: '', description: '', instructions: '',
-    duration_minutes: 60, total_marks: 100, pass_percentage: 40,
-    negative_marking: false, shuffle_questions: false, shuffle_options: false,
-    max_attempts: 1, show_result: true, is_published: false,
-    available_from: '', available_until: '',
+  title: '', description: '', instructions: '',
+  duration_minutes: 60, total_marks: 100, pass_percentage: 40,
+  negative_marking: false, shuffle_questions: false, shuffle_options: false,
+  max_attempts: 1, show_result_immediately: true, is_active: false,
+  start_time: '', end_time: '',
   })
   const [sections, setSections] = useState([])
   const [questions, setQuestions] = useState({}) // sectionId -> []
@@ -192,20 +192,20 @@ export default function AdminExamEditor() {
       .then(r => {
         const e = r.data
         setForm({
-          title: e.title || '', description: e.description || '',
-          instructions: e.instructions || '',
-          duration_minutes: e.duration_minutes || 60,
-          total_marks: e.total_marks || 100,
-          pass_percentage: e.pass_percentage || 40,
-          negative_marking: e.negative_marking || false,
-          shuffle_questions: e.shuffle_questions || false,
-          shuffle_options: e.shuffle_options || false,
-          max_attempts: e.max_attempts || 1,
-          show_result: e.show_result !== false,
-          is_published: e.is_published || false,
-          available_from: e.available_from ? e.available_from.substring(0, 16) : '',
-          available_until: e.available_until ? e.available_until.substring(0, 16) : '',
-        })
+  title: e.title || '', description: e.description || '',
+  instructions: e.instructions || '',
+  duration_minutes: e.duration_minutes || 60,
+  total_marks: e.total_marks || 100,
+  pass_percentage: e.pass_percentage || 40,
+  negative_marking: e.negative_marking || false,
+  shuffle_questions: e.shuffle_questions || false,
+  shuffle_options: e.shuffle_options || false,
+  max_attempts: e.max_attempts || 1,
+  show_result_immediately: e.show_result_immediately !== false,
+  is_active: e.is_active || false,
+  start_time: e.start_time ? e.start_time.substring(0, 16) : '',
+  end_time: e.end_time ? e.end_time.substring(0, 16) : '',
+})
         setSections(e.sections || [])
         // load questions for each section
         const qMap = {}
@@ -341,11 +341,11 @@ export default function AdminExamEditor() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Available From</label>
-              <input type="datetime-local" className="input-field" value={form.available_from} onChange={e => setField('available_from', e.target.value)} />
+              <input type="datetime-local" className="input-field" value={form.start_time} onChange={e => setField('start_time', e.target.value)} />
             </div>
             <div>
               <label className="label">Available Until</label>
-              <input type="datetime-local" className="input-field" value={form.available_until} onChange={e => setField('available_until', e.target.value)} />
+              <input type="datetime-local" className="input-field" value={form.end_time} onChange={e => setField('end_time', e.target.value)} />
             </div>
           </div>
 
@@ -355,8 +355,8 @@ export default function AdminExamEditor() {
               { label: 'Negative marking', key: 'negative_marking' },
               { label: 'Shuffle questions', key: 'shuffle_questions' },
               { label: 'Shuffle options', key: 'shuffle_options' },
-              { label: 'Show result to candidate', key: 'show_result' },
-              { label: 'Published (visible to candidates)', key: 'is_published' },
+              { label: 'Show result to candidate', key: 'show_result_immediately' },
+              { label: 'Published (visible to candidates)', key: 'is_active' },
             ].map(({ label, key }) => (
               <label key={key} className="flex items-center gap-2 cursor-pointer">
                 <div
