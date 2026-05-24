@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime
+from sqlalchemy import text
 
 from database import get_db
 import models, schemas
@@ -94,31 +95,29 @@ async def delete_exam(
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
     
-    # Delete child records first to avoid FK constraint violations
-    attempt_ids = db.query(models.Attempt.id).filter(
-        models.Attempt.exam_id == exam_id
-    ).subquery()
+    try:
+        # Raw SQL to delete in correct FK order
+        db.execute(text("""
+            DELETE FROM answers
+            WHERE attempt_id IN (
+                SELECT id FROM attempts WHERE exam_id = :eid
+            )
+        """), {"eid": exam_id})
+        
+        db.execute(text("DELETE FROM results WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM attempts WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM exam_assignments WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM options WHERE question_id IN (SELECT id FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id = :eid))"), {"eid": exam_id})
+        db.execute(text("DELETE FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id = :eid)"), {"eid": exam_id})
+        db.execute(text("DELETE FROM sections WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM exams WHERE id = :eid"), {"eid": exam_id})
+        
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     
-    db.query(models.Answer).filter(
-        models.Answer.attempt_id.in_(attempt_ids)
-    ).delete(synchronize_session=False)
-    
-    db.query(models.Result).filter(
-        models.Result.exam_id == exam_id
-    ).delete(synchronize_session=False)
-    
-    db.query(models.Attempt).filter(
-        models.Attempt.exam_id == exam_id
-    ).delete(synchronize_session=False)
-    
-    db.query(models.ExamAssignment).filter(
-        models.ExamAssignment.exam_id == exam_id
-    ).delete(synchronize_session=False)
-    
-    db.delete(exam)
-    db.commit()
     return {"message": "Exam deleted"}
-
 
 # ── Assign exam to users ─────────────────────────────────────────────────────
 
