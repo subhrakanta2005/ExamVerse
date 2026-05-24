@@ -14,8 +14,8 @@ import ExamInstructions from './pages/candidate/ExamInstructions'
 import ExamRoom from './pages/candidate/ExamRoom'
 import ResultPage from './pages/candidate/ResultPage'
 import AttemptHistory from './pages/candidate/AttemptHistory'
-import ExamPage   from "./pages/candidate/ExamPage";
-import ResultPage from "./pages/candidate/ResultPage";
+import SyllabusExamPage   from "./pages/candidate/SyllabusExamPage";
+import SyllabusResultPage from "./pages/candidate/SyllabusResultPage";
 
 // Admin pages
 import AdminDashboard from './pages/admin/Dashboard'
@@ -69,8 +69,8 @@ export default function App() {
       <Route path="/exam/:examId/attempt/:attemptId" element={<CandidateRoute><ExamRoom /></CandidateRoute>} />
       <Route path="/result/:attemptId" element={<CandidateRoute><ResultPage /></CandidateRoute>} />
       <Route path="/history" element={<CandidateRoute><AttemptHistory /></CandidateRoute>} />
-      <Route path="/exam/take"   element={<ExamPage />} />
-      <Route path="/exam/result" element={<ResultPage />} />
+      <Route path="/exam/take"   element={<SyllabusExamPage />} />
+      <Route path="/exam/result" element={<SyllabusResultPage />} />
 
       {/* Admin */}
       <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
