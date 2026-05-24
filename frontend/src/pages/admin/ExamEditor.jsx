@@ -173,7 +173,7 @@ export default function AdminExamEditor() {
   title: '', description: '', instructions: '',
   duration_minutes: 60, total_marks: 100, pass_percentage: 40,
   negative_marking: false, shuffle_questions: false, shuffle_options: false,
-  max_attempts: 1, show_result_immediately: true, is_active: false,
+  max_attempts: 1, show_result_immediately: true, is_active: false, is_public: false,
   start_time: '', end_time: '',
   })
   const [sections, setSections] = useState([])
@@ -203,6 +203,7 @@ export default function AdminExamEditor() {
   max_attempts: e.max_attempts || 1,
   show_result_immediately: e.show_result_immediately !== false,
   is_active: e.is_active || false,
+  is_public: e.is_public || false,
   start_time: e.start_time ? e.start_time.substring(0, 16) : '',
   end_time: e.end_time ? e.end_time.substring(0, 16) : '',
 })
@@ -357,6 +358,7 @@ export default function AdminExamEditor() {
               { label: 'Shuffle options', key: 'shuffle_options' },
               { label: 'Show result to candidate', key: 'show_result_immediately' },
               { label: 'Published (visible to candidates)', key: 'is_active' },
+              { label: 'Public (open to all candidates)', key: 'is_public' },
             ].map(({ label, key }) => (
               <label key={key} className="flex items-center gap-2 cursor-pointer">
                 <div
