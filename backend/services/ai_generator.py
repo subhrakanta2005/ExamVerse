@@ -1,23 +1,31 @@
 """
 ExamVerse / ExamForge — Rule-Based Exam Generator
 ==================================================
-Zero external API. No keys. No quota. Always free.
+Zero external API for core generation. No quota. Always free.
 
 Works by:
   1. Extracting text from uploaded syllabus (TXT / PDF / DOCX)
-  2. *** NEW: Detecting and parsing structured MCQ format directly ***
+     — OR — fetching topic content from the web via Tavily Search API
+         (used only when no file is uploaded)
+  2. Detecting and parsing structured MCQ format directly
   3. Stripping structural labels before the regex pipeline touches text
   4. Parsing sections, topics, key terms, and definitions
   5. Generating MCQ / True-False / Short Answer using templates
   6. Producing a syllabus coverage report
 
+Env vars:
+  TAVILY_API_KEY   — optional; enables web search when no file is uploaded
+
 Put this file at:  backend/services/ai_generator.py
 """
 
+import os
 import re
 import random
 import string
 from typing import Optional
+
+import httpx
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -50,6 +58,137 @@ async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
             return file_bytes.decode("utf-8", errors="ignore")
 
     return file_bytes.decode("utf-8", errors="ignore")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1b.  TAVILY WEB SEARCH  (used only when no file is uploaded)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_TAVILY_ENDPOINT = "https://api.tavily.com/search"
+_TAVILY_API_KEY  = os.getenv("TAVILY_API_KEY", "")
+
+# How many search results to pull per topic query
+_TAVILY_MAX_RESULTS   = 5
+# Character budget per result snippet kept for the generator
+_TAVILY_SNIPPET_CHARS = 800
+# Max total characters fed to the generator from all search results combined
+_TAVILY_TOTAL_CAP     = 12_000
+
+
+async def fetch_topic_content_from_web(topic: str, exam_title: str = "") -> str:
+    """
+    Search Tavily for content about `topic` and return concatenated plain text
+    suitable for feeding into generate_exam_from_syllabus().
+
+    Called only when no file is uploaded.
+    Raises RuntimeError if TAVILY_API_KEY is missing or the request fails.
+    """
+    api_key = _TAVILY_API_KEY
+    if not api_key:
+        raise RuntimeError(
+            "TAVILY_API_KEY is not set. Add it to your .env / Render environment variables. "
+            "Get a free key at https://app.tavily.com"
+        )
+
+    # Build a focused query: combine exam title context + topic
+    query = f"{exam_title} {topic}".strip() if exam_title else topic
+    # Trim absurdly long queries
+    if len(query) > 200:
+        query = query[:200]
+
+    payload = {
+        "api_key":              api_key,
+        "query":                query,
+        "search_depth":         "advanced",   # deeper results, same quota cost
+        "include_answer":       True,         # Tavily's own AI summary (free bonus)
+        "include_raw_content":  False,        # raw HTML — we don't need it
+        "max_results":          _TAVILY_MAX_RESULTS,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(_TAVILY_ENDPOINT, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        raise RuntimeError("Tavily search timed out. Please try again.")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 401:
+            raise RuntimeError("Invalid TAVILY_API_KEY. Check your key at https://app.tavily.com")
+        raise RuntimeError(f"Tavily search failed: {e.response.status_code}")
+    except Exception as e:
+        raise RuntimeError(f"Tavily search error: {e}")
+
+    chunks: list[str] = []
+    total_chars = 0
+
+    # Tavily's own answer summary — most reliable, put it first
+    if data.get("answer"):
+        answer_text = data["answer"].strip()
+        chunks.append(answer_text)
+        total_chars += len(answer_text)
+
+    # Individual search result snippets
+    for result in data.get("results", []):
+        if total_chars >= _TAVILY_TOTAL_CAP:
+            break
+        snippet = (result.get("content") or result.get("snippet") or "").strip()
+        if not snippet:
+            continue
+        # Add source heading so _parse_syllabus treats it as a section
+        title_line = result.get("title", "").strip()
+        block = f"\n\n{title_line}\n{snippet[:_TAVILY_SNIPPET_CHARS]}"
+        chunks.append(block)
+        total_chars += len(block)
+
+    if not chunks:
+        raise RuntimeError(
+            f"Tavily returned no usable content for topic: '{topic}'. "
+            "Try a more specific topic name."
+        )
+
+    return "\n".join(chunks)[:_TAVILY_TOTAL_CAP]
+
+
+async def build_syllabus_text_from_search(
+    topic:      str,
+    exam_title: str = "",
+    sub_topics: Optional[str] = None,
+) -> tuple[str, list[str]]:
+    """
+    Run one or more Tavily searches to build a rich text corpus for the generator.
+
+    Strategy:
+    - Always search the main topic
+    - If sub_topics provided (comma-separated), search each one individually
+    - Merge results into one text blob
+
+    Returns:
+        (merged_text, list_of_queries_used)
+    """
+    queries_used: list[str] = []
+    all_chunks:   list[str] = []
+
+    # Main topic search
+    main_text = await fetch_topic_content_from_web(topic, exam_title)
+    all_chunks.append(main_text)
+    queries_used.append(f"{exam_title} {topic}".strip())
+
+    # Sub-topic searches (up to 4 to stay within free quota)
+    if sub_topics:
+        for sub in sub_topics.split(",")[:4]:
+            sub = sub.strip()
+            if not sub:
+                continue
+            try:
+                sub_text = await fetch_topic_content_from_web(sub, exam_title)
+                all_chunks.append(sub_text)
+                queries_used.append(sub)
+            except RuntimeError:
+                pass  # one failed sub-topic shouldn't abort everything
+
+    merged = "\n\n".join(all_chunks)[:_TAVILY_TOTAL_CAP]
+    return merged, queries_used
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -366,7 +505,7 @@ def _parse_syllabus(text: str) -> dict:
         sections.append({"title": current_section, "topics": current_topics})
 
     if not sections:
-        sections = [{"title": "General", "topics": lines[:40]}]
+        sections = [{"title": "General", "topics": lines[:300]}]
 
     # Deduplicate key terms
     seen, unique_terms = set(), []
@@ -380,9 +519,9 @@ def _parse_syllabus(text: str) -> dict:
 
     return {
         "sections":    sections,
-        "key_terms":   unique_terms[:80],
-        "definitions": definitions[:25],
-        "sentences":   all_sentences[:100],
+        "key_terms":   unique_terms[:300],
+        "definitions": definitions[:150],
+        "sentences":   all_sentences[:300],
     }
 
 
