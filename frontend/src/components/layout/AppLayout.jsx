@@ -15,6 +15,7 @@ const adminNav = [
   { path: '/admin/results', label: 'Results', icon: '◎' },
   { path: '/admin/evaluate', label: 'Evaluate', icon: '◐' },
   { path: '/admin/analytics', label: 'Analytics', icon: '◭' },
+  { path: '/admin/syllabus', label: 'AI Exam Generator', icon: '✨' },
 ]
 
 export default function AppLayout({ children }) {
