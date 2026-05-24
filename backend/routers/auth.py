@@ -14,7 +14,7 @@ from utils.auth import (
 router = APIRouter()
 
 RESET_TOKEN_EXPIRE_HOURS = 2
-FRONTEND_URL = os.getenv("https://exam-verse-np738pawm-subhrakantbehera8699-3748s-projects.vercel.app")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://exam-verse-np738pawm-subhrakantbehera8699-3748s-projects.vercel.app")
 
 
 def send_reset_email_bg(email: str, token: str, frontend_url: str):
@@ -26,29 +26,32 @@ def send_reset_email_bg(email: str, token: str, frontend_url: str):
 
 @router.post("/signup", response_model=schemas.Token, status_code=201)
 async def signup(payload: schemas.UserSignup, db: Session = Depends(get_db)):
-    if db.query(models.User).filter(models.User.email == payload.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    if db.query(models.User).filter(models.User.username == payload.username).first():
-        raise HTTPException(status_code=400, detail="Username already taken")
+    try:
+        if db.query(models.User).filter(models.User.email == payload.email).first():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        if db.query(models.User).filter(models.User.username == payload.username).first():
+            raise HTTPException(status_code=400, detail="Username already taken")
 
-    user = models.User(
-        email=payload.email,
-        username=payload.username,
-        full_name=payload.full_name,
-        hashed_password=get_password_hash(payload.password),
-        role=models.UserRole.CANDIDATE,
-        is_verified=True  # Set to False and add email verification in production
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+        user = models.User(
+            email=payload.email,
+            username=payload.username,
+            full_name=payload.full_name,
+            hashed_password=get_password_hash(payload.password),
+            role=models.UserRole.CANDIDATE,
+            is_verified=True
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
-    token = create_access_token({"sub": str(user.id), "role": user.role.value})
-    return schemas.Token(
-        access_token=token,
-        user=schemas.UserOut.from_orm(user)
-    )
-
+        token = create_access_token({"sub": str(user.id), "role": user.role.value})
+        return schemas.Token(
+            access_token=token,
+            user=schemas.UserOut.from_orm(user)
+        )
+    except Exception as e:
+        print("SIGNUP ERROR:", repr(e))
+        raise
 
 @router.post("/login", response_model=schemas.Token)
 async def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
