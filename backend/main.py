@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 from dotenv import load_dotenv
+from routers import syllabus
 
 load_dotenv()
 
@@ -42,6 +43,8 @@ app.include_router(questions.router, prefix="/api/questions", tags=["Questions"]
 app.include_router(attempts.router, prefix="/api/attempts", tags=["Attempts"])
 app.include_router(results.router, prefix="/api/results", tags=["Results"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(syllabus.router, prefix="/api/syllabus", tags=["Syllabus & AI Generation"])
+
 
 @app.get("/")
 async def root():
