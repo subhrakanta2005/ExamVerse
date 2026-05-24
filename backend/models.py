@@ -117,7 +117,7 @@ class Question(Base):
     order = Column(Integer, default=0)
     is_required = Column(Boolean, default=True)
     media_url = Column(String(500))
-    metadata = Column(JSON)  # For match/assertion questions
+    metadata_ = Column("metadata", JSON)  # For match/assertion questions
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     section = relationship("Section", back_populates="questions")
