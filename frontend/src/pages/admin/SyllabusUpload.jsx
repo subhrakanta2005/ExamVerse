@@ -1,415 +1,596 @@
-import React, { useState, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
-import AppLayout from '../../components/layout/AppLayout'
-import { syllabusAPI, examAPI, questionAPI } from '../../services/api'
-import toast from 'react-hot-toast'
+import { useState, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import api, { examAPI, questionAPI } from "../../services/api";
+import toast from "react-hot-toast";
 
-const DIFFICULTIES  = ['easy', 'medium', 'hard', 'mixed']
-const QTYPES        = ['mcq', 'true_false', 'short', 'mixed']
-const QTYPE_LABELS  = { mcq: 'MCQ', true_false: 'True / False', short: 'Short Answer', mixed: 'Mixed' }
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const UploadIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+  </svg>
+);
+const SparkIcon = () => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+    <path fillRule="evenodd" d="M9 4.5a.75.75 0 01.721.544l.813 2.846a3.75 3.75 0 002.576 2.576l2.846.813a.75.75 0 010 1.442l-2.846.813a3.75 3.75 0 00-2.576 2.576l-.813 2.846a.75.75 0 01-1.442 0l-.813-2.846a3.75 3.75 0 00-2.576-2.576l-2.846-.813a.75.75 0 010-1.442l2.846-.813A3.75 3.75 0 007.466 7.89l.813-2.846A.75.75 0 019 4.5zM18 1.5a.75.75 0 01.728.568l.258 1.036c.236.94.97 1.674 1.91 1.91l1.036.258a.75.75 0 010 1.456l-1.036.258c-.94.236-1.674.97-1.91 1.91l-.258 1.036a.75.75 0 01-1.456 0l-.258-1.036a2.625 2.625 0 00-1.91-1.91l-1.036-.258a.75.75 0 010-1.456l1.036-.258a2.625 2.625 0 001.91-1.91l.258-1.036A.75.75 0 0118 1.5z" clipRule="evenodd" />
+  </svg>
+);
+const FileIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-8 h-8">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+  </svg>
+);
+const XIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+  </svg>
+);
+const CheckIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+  </svg>
+);
+const ArrowRightIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+  </svg>
+);
+const ImportIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25H15M9 12l3 3m0 0l3-3m-3 3V2.25" />
+  </svg>
+);
 
-// ─── Shared settings row ──────────────────────────────────────────────────────
+const difficultyColor = {
+  easy:   "bg-emerald-100 text-emerald-700",
+  medium: "bg-amber-100 text-amber-700",
+  hard:   "bg-red-100 text-red-700",
+  mixed:  "bg-violet-100 text-violet-700",
+};
 
-function Settings({ s, set }) {
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-      <div>
-        <label className="label">Questions (1–300)</label>
-        <input
-          type="number" min={1} max={300}
-          className="input-field"
-          value={s.num_questions}
-          onChange={e => set('num_questions', Math.min(300, Math.max(1, Number(e.target.value))))}
-        />
-      </div>
-      <div>
-        <label className="label">Difficulty</label>
-        <select className="input-field" value={s.difficulty} onChange={e => set('difficulty', e.target.value)}>
-          {DIFFICULTIES.map(d => <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>)}
-        </select>
-      </div>
-      <div>
-        <label className="label">Question Types</label>
-        <select className="input-field" value={s.question_types} onChange={e => set('question_types', e.target.value)}>
-          {QTYPES.map(t => <option key={t} value={t}>{QTYPE_LABELS[t]}</option>)}
-        </select>
-      </div>
-      <div>
-        <label className="label">Time Limit (min)</label>
-        <input
-          type="number" min={5} max={300}
-          className="input-field"
-          value={s.time_limit}
-          onChange={e => set('time_limit', Math.max(5, Number(e.target.value)))}
-        />
-      </div>
-      <div className="col-span-2">
-        <label className="label">Exam Title (optional)</label>
-        <input
-          type="text" className="input-field"
-          value={s.exam_title}
-          onChange={e => set('exam_title', e.target.value)}
-          placeholder="Auto-detected from content if blank"
-        />
-      </div>
-      <div className="col-span-2">
-        <label className="label">Focus Topics (optional)</label>
-        <input
-          type="text" className="input-field"
-          value={s.focus_topics}
-          onChange={e => set('focus_topics', e.target.value)}
-          placeholder="Comma-separated, e.g. Geography, History"
-        />
-      </div>
-    </div>
-  )
-}
+// Map AI generator question_type → backend QuestionType enum
+const typeMap = {
+  mcq:          "mcq_single",
+  mcq_single:   "mcq_single",
+  mcq_multiple: "mcq_multiple",
+  true_false:   "true_false",
+  short_answer: "short_answer",
+  fill_blank:   "fill_blank",
+};
 
-// ─── Tab 1: Upload file ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+export default function SyllabusUpload() {
+  const navigate = useNavigate();
+  const fileInputRef = useRef(null);
 
-function UploadTab({ settings, setField, onResult }) {
-  const [file, setFile]         = useState(null)
-  const [dragging, setDragging] = useState(false)
-  const [loading, setLoading]   = useState(false)
-  const inputRef                = useRef()
+  const [file, setFile] = useState(null);
+  const [syllabusText, setSyllabusText] = useState("");
+  const [inputMode, setInputMode] = useState("file");
+  const [dragging, setDragging] = useState(false);
 
+  const [config, setConfig] = useState({
+    num_questions: 10,
+    difficulty: "medium",
+    question_types: "mixed",
+    time_limit: 30,
+    exam_title: "",
+    focus_topics: "",
+  });
+
+  const [step, setStep] = useState("upload"); // upload | generating | done | importing | imported | error
+  const [progress, setProgress] = useState(0);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, label: "" });
+  const [result, setResult] = useState(null);
+  const [importedExamId, setImportedExamId] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // ── Drag-and-drop ───────────────────────────────────────────────────────────
   const handleDrop = useCallback((e) => {
-    e.preventDefault()
-    setDragging(false)
-    const f = e.dataTransfer.files[0]
-    if (f) setFile(f)
-  }, [])
+    e.preventDefault();
+    setDragging(false);
+    const dropped = e.dataTransfer.files[0];
+    if (dropped) acceptFile(dropped);
+  }, []);
 
-  const handleSubmit = async () => {
-    if (!file) return toast.error('Please select a file first')
-    setLoading(true)
-    try {
-      const res = await syllabusAPI.uploadAndGenerate(file, settings)
-      toast.success('Exam generated!')
-      onResult(res.data)
-    } catch (e) {
-      toast.error(e.response?.data?.detail || 'Generation failed')
-    } finally {
-      setLoading(false)
+  const acceptFile = (f) => {
+    const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"];
+    if (!allowed.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
+      setErrorMsg("Only PDF, DOCX, or TXT files are supported.");
+      return;
     }
-  }
+    if (f.size > 10 * 1024 * 1024) { setErrorMsg("File must be under 10 MB."); return; }
+    setErrorMsg("");
+    setFile(f);
+  };
 
-  return (
-    <div className="space-y-6">
-      <div
-        onDragOver={e => { e.preventDefault(); setDragging(true) }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={handleDrop}
-        onClick={() => inputRef.current.click()}
-        className={`cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition-all
-          ${dragging ? 'border-brand-400 bg-brand-500/10'
-            : file    ? 'border-green-500 bg-green-500/10'
-                      : 'border-slate-700 hover:border-brand-500/50 hover:bg-slate-800/60'}`}
-      >
-        <input
-          ref={inputRef} type="file"
-          accept=".txt,.pdf,.docx,.doc"
-          className="hidden"
-          onChange={e => setFile(e.target.files[0])}
-        />
-        {file ? (
-          <div className="space-y-1">
-            <p className="text-2xl">📄</p>
-            <p className="font-semibold text-green-400">{file.name}</p>
-            <p className="text-xs text-slate-500">{(file.size / 1024).toFixed(1)} KB — click to change</p>
-          </div>
-        ) : (
-          <div className="space-y-1">
-            <p className="text-2xl">⬆️</p>
-            <p className="text-slate-300 font-medium">Drop syllabus here or click to browse</p>
-            <p className="text-xs text-slate-500">TXT · PDF · DOCX — max 10 MB</p>
-          </div>
-        )}
-      </div>
+  const updateConfig = (key, val) => setConfig(prev => ({ ...prev, [key]: val }));
 
-      <Settings s={settings} set={setField} />
+  // ── Generate (call backend AI generator) ────────────────────────────────────
+  const handleGenerate = async () => {
+    if (inputMode === "file" && !file) { setErrorMsg("Please upload a syllabus file."); return; }
+    if (inputMode === "text" && syllabusText.trim().length < 50) { setErrorMsg("Please paste at least 50 characters."); return; }
 
-      <div className="flex justify-end">
-        <button className="btn-primary" onClick={handleSubmit} disabled={!file || loading}>
-          {loading ? 'Generating…' : 'Generate Exam →'}
-        </button>
-      </div>
-    </div>
-  )
-}
+    setStep("generating");
+    setProgress(0);
+    setErrorMsg("");
 
-// ─── Tab 2: Search by topics ──────────────────────────────────────────────────
+    const ticker = setInterval(() => {
+      setProgress(p => p < 88 ? p + Math.random() * 7 : p);
+    }, 600);
 
-function SearchTab({ settings, setField, onResult }) {
-  const [topics, setTopics]   = useState([''])
-  const [extra, setExtra]     = useState('')
-  const [loading, setLoading] = useState(false)
-
-  const setTopic    = (i, v) => setTopics(ts => ts.map((t, idx) => idx === i ? v : t))
-  const addTopic    = ()     => setTopics(ts => [...ts, ''])
-  const removeTopic = (i)    => setTopics(ts => ts.filter((_, idx) => idx !== i))
-
-  const handleSubmit = async () => {
-    const cleaned = topics.map(t => t.trim()).filter(Boolean)
-    if (!cleaned.length) return toast.error('Add at least one topic')
-    setLoading(true)
     try {
-      const res = await syllabusAPI.searchAndGenerate({
-        ...settings,
-        topics: cleaned,
-        extra_context: extra,
-      })
-      toast.success(res.data.search_enabled ? 'Exam generated from web search!' : 'Exam generated (fallback mode)')
-      onResult(res.data)
-    } catch (e) {
-      toast.error(e.response?.data?.detail || 'Generation failed')
-    } finally {
-      setLoading(false)
+      const formData = new FormData();
+      if (inputMode === "file" && file) formData.append("file", file);
+      if (inputMode === "text") {
+        // wrap text as a .txt blob so the backend's file parser works
+        const blob = new Blob([syllabusText], { type: "text/plain" });
+        formData.append("file", blob, "syllabus.txt");
+      }
+      formData.append("num_questions", config.num_questions);
+      formData.append("difficulty", config.difficulty);
+      formData.append("question_types", config.question_types);
+      formData.append("time_limit", config.time_limit);
+      if (config.exam_title) formData.append("exam_title", config.exam_title);
+      if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
+
+      const { data } = await api.post("/api/syllabus/upload-and-generate", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+
+      clearInterval(ticker);
+      setProgress(100);
+      setResult(data);
+      setStep("done");
+    } catch (err) {
+      clearInterval(ticker);
+      setErrorMsg(err?.response?.data?.detail || "Generation failed. Please try again.");
+      setStep("error");
     }
-  }
+  };
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <label className="label">Topics to search</label>
-        <div className="space-y-2">
-          {topics.map((t, i) => (
-            <div key={i} className="flex gap-2">
-              <input
-                type="text" className="input-field"
-                value={t}
-                onChange={e => setTopic(i, e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addTopic()}
-                placeholder={`Topic ${i + 1}, e.g. Odisha Geography`}
-              />
-              {topics.length > 1 && (
-                <button
-                  onClick={() => removeTopic(i)}
-                  className="text-red-500 hover:text-red-400 px-2 text-lg transition-colors"
-                >×</button>
-              )}
-            </div>
-          ))}
-          <button onClick={addTopic} className="btn-ghost text-xs text-slate-400">+ Add topic</button>
-        </div>
-      </div>
-
-      <div>
-        <label className="label">Extra context (optional)</label>
-        <input
-          type="text" className="input-field"
-          value={extra}
-          onChange={e => setExtra(e.target.value)}
-          placeholder='Narrows the search, e.g. "OSSSC exam Odisha" or "Class 10 CBSE"'
-        />
-      </div>
-
-      <Settings s={settings} set={setField} />
-
-      <div className="flex justify-end">
-        <button className="btn-primary" onClick={handleSubmit} disabled={topics.every(t => !t.trim()) || loading}>
-          {loading ? 'Searching & Generating…' : 'Search & Generate →'}
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ─── Result preview + import to exam ─────────────────────────────────────────
-
-function ResultPreview({ result, onImported }) {
-  const navigate              = useNavigate()
-  const [importing, setImporting] = useState(false)
-
-  const exam    = result.exam
-  const report  = result.coverage_report || {}
-  const totalQs = exam?.sections?.reduce((n, s) => n + (s.questions?.length ?? 0), 0) ?? 0
-  const pct     = report.coverage_percentage ?? 0
-  const pctCls  = pct >= 70 ? 'text-green-400' : pct >= 40 ? 'text-yellow-400' : 'text-red-400'
-
+  // ── Import — saves exam + sections + questions with correct is_correct flags ─
   const handleImport = async () => {
-    setImporting(true)
+    if (!result?.exam) return;
+    setStep("importing");
+
     try {
-      // 1. Create exam shell
-      const examRes = await examAPI.create({
-        title:            exam.title,
-        description:      exam.description,
-        duration_minutes: exam.duration_minutes,
-        total_marks:      exam.total_marks,
-        pass_percentage:  exam.pass_percentage,
-        negative_marking: exam.negative_marking,
-      })
-      const newExamId = examRes.data.id
+      const examData = result.exam;
 
-      // 2. Create sections + questions
-      for (const sec of (exam.sections || [])) {
-        const secRes    = await examAPI.addSection(newExamId, { title: sec.title, order_index: 0 })
-        const sectionId = secRes.data.id
+      // Count total questions for progress bar
+      const allQuestions = (examData.sections || []).flatMap(s => s.questions || []);
+      const total = allQuestions.length;
+      setImportProgress({ current: 0, total, label: "Creating exam…" });
 
-        for (const q of (sec.questions || [])) {
-          await questionAPI.create({
+      // ── Step 1: Create the exam ──────────────────────────────────────────────
+      const examPayload = {
+        title:            examData.title || config.exam_title || "Generated Exam",
+        description:      examData.description || "",
+        instructions:     examData.instructions || "",
+        duration_minutes: examData.duration_minutes || config.time_limit || 30,
+        total_marks:      examData.total_marks || allQuestions.reduce((s, q) => s + (q.marks || 1), 0),
+        pass_percentage:  examData.pass_percentage || 40,
+        negative_marking: examData.negative_marking || false,
+        shuffle_questions: false,
+        shuffle_options:   false,
+        max_attempts:      1,
+        is_active:         true,   // ← published immediately
+        is_public:         true,   // ← visible to all candidates
+        show_result_immediately: true,
+      };
+
+      const examRes = await examAPI.create(examPayload);
+      const examId = examRes.data.id;
+
+      // ── Step 2: Create sections + questions ──────────────────────────────────
+      let questionsDone = 0;
+
+      for (let si = 0; si < (examData.sections || []).length; si++) {
+        const section = examData.sections[si];
+
+        setImportProgress({ current: questionsDone, total, label: `Creating section "${section.title}"…` });
+
+        const sectionRes = await examAPI.addSection(examId, {
+          title:       section.title || `Section ${si + 1}`,
+          description: section.description || "",
+          order:       si,
+        });
+        const sectionId = sectionRes.data.id;
+
+        const sectionQuestions = section.questions || [];
+
+        for (let qi = 0; qi < sectionQuestions.length; qi++) {
+          const q = sectionQuestions[qi];
+
+          setImportProgress({
+            current: questionsDone,
+            total,
+            label: `Saving question ${questionsDone + 1} of ${total}…`,
+          });
+
+          // Map question type to backend enum
+          const qType = typeMap[q.question_type] || "mcq_single";
+
+          // Build options — PRESERVE is_correct flag
+          const options = (q.options || []).map((o, oi) => ({
+            text:       o.text || `Option ${oi + 1}`,
+            is_correct: Boolean(o.is_correct),  // ← THE KEY FIX
+            order:      oi,
+          }));
+
+          // For true_false with no options, generate them
+          if (qType === "true_false" && options.length === 0) {
+            const correctAnswer = (q.correct_answer || "").toLowerCase();
+            options.push(
+              { text: "True",  is_correct: correctAnswer === "true",  order: 0 },
+              { text: "False", is_correct: correctAnswer === "false", order: 1 },
+            );
+          }
+
+          const questionPayload = {
             section_id:     sectionId,
-            question_type:  q.question_type === 'mcq' ? 'mcq_single' : q.question_type,
-            text:           q.text,
-            marks:          q.marks ?? 1,
+            question_type:  qType,
+            text:           q.text || "Question",
+            explanation:    q.explanation || "",
+            marks:          Number(q.marks) || 1,
             negative_marks: 0,
-            difficulty:     q.difficulty ?? 'medium',
-            explanation:    q.explanation ?? '',
-            correct_answer: q.correct_answer ?? '',
-            options:        (q.options || []).map(o => ({ text: o.text, is_correct: o.is_correct })),
-          })
+            order:          qi,
+            options:        options,
+          };
+
+          try {
+            await questionAPI.create(questionPayload);
+          } catch (qErr) {
+            console.warn(`Question ${qi + 1} failed:`, qErr?.response?.data);
+            // continue — don't abort the whole import for one bad question
+          }
+
+          questionsDone++;
         }
       }
 
-      toast.success('Exam imported! Opening editor…')
-      onImported?.()
-      navigate(`/admin/exams/${newExamId}/edit`)
-    } catch (e) {
-      toast.error(e.response?.data?.detail || 'Import failed')
-    } finally {
-      setImporting(false)
+      setImportProgress({ current: total, total, label: "Done!" });
+      setImportedExamId(examId);
+      setStep("imported");
+      toast.success(`Exam imported! ${total} questions saved.`);
+
+    } catch (err) {
+      console.error("Import error:", err);
+      setErrorMsg(err?.response?.data?.detail || "Import failed. Please try again.");
+      setStep("done"); // go back to done so they can retry
+      toast.error("Import failed — see error above.");
     }
-  }
+  };
 
+  const reset = () => {
+    setStep("upload");
+    setFile(null);
+    setSyllabusText("");
+    setResult(null);
+    setErrorMsg("");
+    setProgress(0);
+    setImportedExamId(null);
+    setImportProgress({ current: 0, total: 0, label: "" });
+    setConfig({ num_questions: 10, difficulty: "medium", question_types: "mixed", time_limit: 30, exam_title: "", focus_topics: "" });
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div className="glass-card p-6 space-y-5">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h2 className="font-semibold text-white text-lg">{exam?.title}</h2>
-          <p className="text-slate-400 text-sm">{exam?.description}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {result.source === 'web_search' && (
-            <span className="badge-blue text-xs">🌐 Web search</span>
-          )}
-          <button className="btn-primary text-sm" onClick={handleImport} disabled={importing}>
-            {importing ? 'Importing…' : '⬆ Import to Exams'}
-          </button>
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-        {[
-          { label: 'Questions', value: totalQs },
-          { label: 'Marks',     value: exam?.total_marks },
-          { label: 'Duration',  value: `${exam?.duration_minutes}m` },
-          { label: 'Coverage',  value: `${pct}%`, cls: pctCls },
-          { label: 'Topics',    value: `${report.topics_covered ?? 0}/${report.total_topics_in_syllabus ?? 0}` },
-        ].map(({ label, value, cls }) => (
-          <div key={label} className="bg-slate-800/50 rounded-xl p-3 text-center">
-            <p className={`text-xl font-bold ${cls ?? 'text-white'}`}>{value}</p>
-            <p className="text-xs text-slate-500 mt-0.5">{label}</p>
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-6 py-5">
+        <div className="max-w-4xl mx-auto flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white">
+            <SparkIcon />
           </div>
-        ))}
-      </div>
-
-      {/* Queries used */}
-      {result.queries_used?.length > 0 && (
-        <div>
-          <p className="label mb-2">Queries used</p>
-          <div className="flex flex-wrap gap-2">
-            {result.queries_used.map((q, i) => (
-              <span key={i} className="badge-gray text-xs">{q}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Weak areas */}
-      {report.weak_areas?.length > 0 && (
-        <div>
-          <p className="label mb-2">Weak coverage areas</p>
-          <div className="space-y-1">
-            {report.weak_areas.slice(0, 3).map((w, i) => (
-              <div key={i} className="text-xs text-yellow-400 bg-yellow-500/10 rounded-lg px-3 py-2">
-                {w.section} — {w.questions_generated} q / {w.topics_in_syllabus} topics
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Question preview */}
-      <div>
-        <p className="label mb-2">Preview (first 5 questions)</p>
-        <div className="space-y-2">
-          {exam?.sections?.flatMap(s => s.questions || []).slice(0, 5).map((q, i) => (
-            <div key={i} className="bg-slate-800/40 rounded-xl p-3">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="badge-gray text-xs">{i + 1}</span>
-                <span className="badge-blue text-xs">{q.question_type}</span>
-                <span className="text-slate-500 text-xs">{q.marks} mark{q.marks !== 1 ? 's' : ''}</span>
-              </div>
-              <p className="text-slate-300 text-sm">{q.text}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ─── Main page ────────────────────────────────────────────────────────────────
-
-export default function SyllabusUpload() {
-  const [tab, setTab]       = useState('upload')
-  const [result, setResult] = useState(null)
-  const [settings, setSettings] = useState({
-    num_questions:  10,
-    difficulty:     'mixed',
-    question_types: 'mixed',
-    time_limit:     30,
-    exam_title:     '',
-    focus_topics:   '',
-  })
-
-  const setField = (k, v) => setSettings(s => ({ ...s, [k]: v }))
-
-  return (
-    <AppLayout>
-      <div className="max-w-3xl mx-auto space-y-8">
-
-        <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Generate from Syllabus</h1>
-            <p className="text-slate-400 text-sm mt-0.5">
-              Upload a file or search by topic — we'll auto-generate exam questions.
-            </p>
+            <h1 className="text-xl font-bold text-gray-900">AI Exam Generator</h1>
+            <p className="text-sm text-gray-500">Upload a syllabus → AI creates a full exam instantly</p>
           </div>
         </div>
+      </div>
 
-        {/* Tab switcher */}
-        <div className="flex rounded-xl overflow-hidden border border-slate-700 w-fit">
-          {[
-            { key: 'upload', label: '📄 Upload File' },
-            { key: 'search', label: '🔍 Search Topics' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => { setTab(key); setResult(null) }}
-              className={`px-6 py-2.5 text-sm font-medium transition-all
-                ${tab === key ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+      <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
 
-        {/* Tab content */}
-        <div className="glass-card p-6">
-          {tab === 'upload'
-            ? <UploadTab settings={settings} setField={setField} onResult={setResult} />
-            : <SearchTab settings={settings} setField={setField} onResult={setResult} />
-          }
-        </div>
-
-        {/* Result */}
-        {result?.success && (
-          <ResultPreview result={result} onImported={() => setResult(null)} />
+        {/* ════════ IMPORTED STATE ════════ */}
+        {step === "imported" && (
+          <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-emerald-500 to-teal-600 px-8 py-10 text-white text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckIcon />
+              </div>
+              <h2 className="text-2xl font-bold mb-1">Exam Saved to Database!</h2>
+              <p className="text-emerald-100 text-sm">Live and visible to candidates immediately</p>
+            </div>
+            <div className="p-8 flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)}
+                className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                Edit Exam <ArrowRightIcon />
+              </button>
+              <button
+                onClick={() => navigate("/admin/exams")}
+                className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                All Exams
+              </button>
+              <button
+                onClick={reset}
+                className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                Generate Another
+              </button>
+            </div>
+          </div>
         )}
 
+        {/* ════════ IMPORTING STATE ════════ */}
+        {step === "importing" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
+            <div className="relative w-24 h-24 mx-auto mb-6">
+              <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#e0e7ff" strokeWidth="8" />
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#10b981" strokeWidth="8"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - (importProgress.total ? importProgress.current / importProgress.total : 0))}`}
+                  strokeLinecap="round"
+                  style={{ transition: "stroke-dashoffset 0.3s ease" }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-lg font-bold text-emerald-600">
+                  {importProgress.total ? Math.round(importProgress.current / importProgress.total * 100) : 0}%
+                </span>
+              </div>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Saving to Database…</h2>
+            <p className="text-sm text-gray-500 mb-2">{importProgress.label}</p>
+            <p className="text-xs text-gray-400">{importProgress.current} of {importProgress.total} questions saved</p>
+          </div>
+        )}
+
+        {/* ════════ DONE STATE ════════ */}
+        {step === "done" && result && (
+          <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-indigo-600 to-violet-600 px-8 py-10 text-white text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckIcon />
+              </div>
+              <h2 className="text-2xl font-bold mb-1">Exam Generated!</h2>
+              <p className="text-indigo-200 text-sm">Preview below — click "Save to Database" to make it live</p>
+            </div>
+
+            {errorMsg && (
+              <div className="mx-8 mt-6 flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center font-bold text-red-600">!</span>
+                {errorMsg}
+              </div>
+            )}
+
+            {/* Stats */}
+            <div className="p-8 grid grid-cols-2 sm:grid-cols-4 gap-4 border-b border-gray-100">
+              {[
+                { label: "Questions", value: (result.exam?.sections || []).flatMap(s => s.questions || []).length },
+                { label: "Total Marks", value: result.exam?.total_marks },
+                { label: "Duration", value: `${result.exam?.duration_minutes} min` },
+                { label: "Sections", value: result.exam?.sections?.length },
+              ].map(({ label, value }) => (
+                <div key={label} className="text-center">
+                  <p className="text-2xl font-bold text-gray-900">{value}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Coverage report */}
+            {result.coverage_report && (
+              <div className="px-8 py-4 bg-gray-50 border-b border-gray-100 text-sm text-gray-600">
+                Coverage: <span className="font-semibold text-indigo-600">{result.coverage_report.coverage_percentage}%</span>
+                {result.coverage_report.note && <span className="ml-3 text-xs text-gray-400">{result.coverage_report.note}</span>}
+              </div>
+            )}
+
+            {/* Preview first 5 questions */}
+            {(result.exam?.sections || []).flatMap(s => s.questions || []).slice(0, 5).length > 0 && (
+              <div className="px-8 py-6 space-y-4 border-b border-gray-100">
+                <h3 className="text-sm font-semibold text-gray-700">Question Preview (first 5)</h3>
+                {(result.exam?.sections || []).flatMap(s => s.questions || []).slice(0, 5).map((q, i) => (
+                  <div key={i} className="bg-gray-50 rounded-xl p-4">
+                    <p className="text-sm font-medium text-gray-800 mb-2">{i + 1}. {q.text}</p>
+                    {(q.options || []).map((o, oi) => (
+                      <div key={oi} className={`text-xs px-3 py-1.5 rounded-lg mb-1 ${o.is_correct ? "bg-emerald-50 text-emerald-700 font-medium" : "text-gray-500"}`}>
+                        {String.fromCharCode(65 + oi)}. {o.text}
+                        {o.is_correct && <span className="ml-2 text-emerald-500">✓ correct</span>}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div className="p-8 flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleImport}
+                className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                <ImportIcon />
+                Save to Database
+              </button>
+              <button
+                onClick={() => navigate("/admin/exams")}
+                className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                All Exams
+              </button>
+              <button
+                onClick={reset}
+                className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                Start Over
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ════════ GENERATING STATE ════════ */}
+        {step === "generating" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
+            <div className="relative w-24 h-24 mx-auto mb-6">
+              <svg className="w-24 h-24 -rotate-90 animate-spin" style={{ animationDuration: "2s" }} viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#e0e7ff" strokeWidth="8" />
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#4f46e5" strokeWidth="8"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - progress / 100)}`}
+                  strokeLinecap="round"
+                  style={{ transition: "stroke-dashoffset 0.5s ease" }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-lg font-bold text-indigo-600">{Math.round(progress)}%</span>
+              </div>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Generating your exam…</h2>
+            <p className="text-sm text-gray-500 mb-6">Reading your syllabus and crafting questions. Takes ~10–20 seconds.</p>
+            <div className="space-y-2 max-w-xs mx-auto text-left">
+              {[
+                { label: "Reading syllabus content", done: progress > 15 },
+                { label: "Identifying key topics",    done: progress > 35 },
+                { label: "Generating questions",      done: progress > 65 },
+                { label: "Structuring exam format",   done: progress > 85 },
+                { label: "Finalising output",         done: progress >= 100 },
+              ].map(({ label, done }) => (
+                <div key={label} className="flex items-center gap-2.5 text-sm">
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${done ? "bg-indigo-600 text-white" : "bg-gray-200"}`}>
+                    {done && <CheckIcon />}
+                  </span>
+                  <span className={done ? "text-gray-900" : "text-gray-400"}>{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ════════ UPLOAD STATE ════════ */}
+        {(step === "upload" || step === "error") && (
+          <>
+            {errorMsg && (
+              <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center font-bold text-red-600">!</span>
+                {errorMsg}
+                <button onClick={() => { setErrorMsg(""); setStep("upload"); }} className="ml-auto text-red-400 hover:text-red-600"><XIcon /></button>
+              </div>
+            )}
+
+            {/* Syllabus Input */}
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                <h2 className="font-semibold text-gray-900">1. Syllabus Content</h2>
+                <div className="flex rounded-lg overflow-hidden border border-gray-200 text-sm">
+                  <button onClick={() => setInputMode("file")} className={`px-4 py-1.5 font-medium transition-colors ${inputMode === "file" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}>Upload File</button>
+                  <button onClick={() => setInputMode("text")} className={`px-4 py-1.5 font-medium transition-colors ${inputMode === "text" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}>Paste Text</button>
+                </div>
+              </div>
+              <div className="p-6">
+                {inputMode === "file" ? (
+                  file ? (
+                    <div className="flex items-center gap-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
+                      <div className="text-indigo-500"><FileIcon /></div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{file.name}</p>
+                        <p className="text-sm text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                      <button onClick={() => setFile(null)} className="text-gray-400 hover:text-red-500 transition-colors"><XIcon /></button>
+                    </div>
+                  ) : (
+                    <div
+                      onDrop={handleDrop}
+                      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                      onDragLeave={() => setDragging(false)}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-all ${dragging ? "border-indigo-400 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-gray-50"}`}
+                    >
+                      <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="hidden" onChange={e => e.target.files[0] && acceptFile(e.target.files[0])} />
+                      <div className={`inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4 transition-colors ${dragging ? "bg-indigo-100 text-indigo-600" : "bg-gray-100 text-gray-400"}`}><UploadIcon /></div>
+                      <p className="font-semibold text-gray-700 mb-1">Drop your syllabus here</p>
+                      <p className="text-sm text-gray-400">or click to browse — PDF, DOCX, or TXT up to 10 MB</p>
+                    </div>
+                  )
+                ) : (
+                  <div>
+                    <textarea
+                      value={syllabusText}
+                      onChange={e => setSyllabusText(e.target.value)}
+                      placeholder={"Paste your syllabus content here…\n\nExample:\nUnit 1: Introduction\n- Topic A, Topic B\nUnit 2: Advanced\n- Topic C, Topic D"}
+                      className="w-full h-52 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    />
+                    <p className="text-xs text-gray-400 mt-1.5">{syllabusText.length} characters {syllabusText.length < 50 && syllabusText.length > 0 && <span className="text-amber-500">(need at least 50)</span>}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Config */}
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-900">2. Exam Configuration</h2>
+              </div>
+              <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Exam Title <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input type="text" value={config.exam_title} onChange={e => updateConfig("exam_title", e.target.value)} placeholder="e.g. OSSSC RI/ARI Mock Test" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Questions: <span className="text-indigo-600 font-bold">{config.num_questions}</span></label>
+                  <input type="range" min={3} max={300} value={config.num_questions} onChange={e => updateConfig("num_questions", Number(e.target.value))} className="w-full accent-indigo-600" />
+                  <div className="flex justify-between text-xs text-gray-400 mt-0.5"><span>3</span><span>300</span></div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Time: <span className="text-indigo-600 font-bold">{config.time_limit} min</span></label>
+                  <input type="range" min={5} max={180} step={5} value={config.time_limit} onChange={e => updateConfig("time_limit", Number(e.target.value))} className="w-full accent-indigo-600" />
+                  <div className="flex justify-between text-xs text-gray-400 mt-0.5"><span>5 min</span><span>3 hr</span></div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Difficulty</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {["easy","medium","hard","mixed"].map(d => (
+                      <button key={d} onClick={() => updateConfig("difficulty", d)} className={`py-2 rounded-xl text-sm font-medium border transition-all capitalize ${config.difficulty === d ? "border-indigo-600 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>
+                        <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${d==="easy"?"bg-emerald-400":d==="medium"?"bg-amber-400":d==="hard"?"bg-red-400":"bg-violet-400"}`} />{d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Question Type</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[{val:"mcq",label:"MCQ Only"},{val:"mixed",label:"Mixed"},{val:"true_false",label:"True/False"},{val:"short",label:"Short Answer"}].map(({val,label}) => (
+                      <button key={val} onClick={() => updateConfig("question_types", val)} className={`py-2 rounded-xl text-sm font-medium border transition-all ${config.question_types===val?"border-indigo-600 bg-indigo-50 text-indigo-700":"border-gray-200 text-gray-600 hover:border-gray-300"}`}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Focus Topics <span className="text-gray-400 font-normal">(optional, comma-separated)</span></label>
+                  <input type="text" value={config.focus_topics} onChange={e => updateConfig("focus_topics", e.target.value)} placeholder="e.g. Odisha Geography, Indian History" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                </div>
+              </div>
+            </div>
+
+            {/* Generate button */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-6">
+              <h2 className="font-semibold text-gray-900 mb-4">3. Review & Generate</h2>
+              <div className="flex flex-wrap gap-2 mb-6">
+                <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm">{config.num_questions} questions</span>
+                <span className={`px-3 py-1 rounded-full text-sm capitalize ${difficultyColor[config.difficulty]}`}>{config.difficulty}</span>
+                <span className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm">{config.time_limit} min</span>
+                {inputMode === "file" && file && <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-sm">📄 {file.name}</span>}
+              </div>
+              <button onClick={handleGenerate} className="w-full flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold py-4 rounded-xl text-base transition-all">
+                <SparkIcon />
+                Generate Exam
+              </button>
+            </div>
+          </>
+        )}
       </div>
-    </AppLayout>
-  )
+    </div>
+  );
 }
