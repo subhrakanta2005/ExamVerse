@@ -176,10 +176,10 @@ export default function SyllabusUpload() {
             </div>
             <div className="p-8 grid grid-cols-2 sm:grid-cols-4 gap-4 border-b border-gray-100">
               {[
-                { label: "Exam Title",  value: result.title },
-                { label: "Total Marks", value: result.total_marks },
-                { label: "Duration",    value: `${result.duration_minutes} min` },
-                { label: "Status",      value: result.is_active ? "Active" : "Draft" },
+                { label: "Exam Title",  value: result.exam?.title },
+                { label: "Total Marks", value: result.exam?.total_marks },
+                { label: "Duration",    value: `${result.exam?.duration_minutes} min` },
+                { label: "Sections",    value: result.exam?.sections?.length },
               ].map(({ label, value }) => (
                 <div key={label} className="text-center">
                   <p className="text-2xl font-bold text-gray-900">{value}</p>
@@ -189,7 +189,7 @@ export default function SyllabusUpload() {
             </div>
             <div className="p-8 flex flex-col sm:flex-row gap-3">
               <button
-                onClick={() => navigate(`/admin/exams/${result.exam_id}`)}
+                onClick={() => navigate("/exam/take", { state: { exam: result.exam } })}
                 className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
               >
                 View Exam <ArrowRightIcon />
