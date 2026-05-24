@@ -66,7 +66,8 @@ function QuestionForm({ sectionId, onSaved, onCancel }) {
       toast.success('Question saved')
       onSaved(res.data)
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Failed to save question')
+      const detail = e.response?.data?.detail
+toast.error(Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'Failed to save question'))
     } finally {
       setSaving(false)
     }
@@ -222,17 +223,21 @@ export default function AdminExamEditor() {
     if (!form.title.trim()) return toast.error('Title is required')
     setSaving(true)
     try {
+      const payload = { ...form }
+      if (!payload.start_time) payload.start_time = null
+      if (!payload.end_time) payload.end_time = null
       let res
       if (examIdToUse) {
-        res = await examAPI.update(examIdToUse, form)
+        res = await examAPI.update(examIdToUse, payload)
         toast.success('Exam updated')
       } else {
-        res = await examAPI.create(form)
+        res = await examAPI.create(payload)
         setSaved(res.data.id)
         toast.success('Exam created! Now add sections and questions.')
       }
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Failed to save exam')
+      const detail = e.response?.data?.detail
+      toast.error(Array.isArray(detail) ? detail.map(d => d.msg).join('; ') : (detail || 'Failed to save exam'))
     } finally {
       setSaving(false)
     }
