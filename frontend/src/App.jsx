@@ -23,6 +23,7 @@ import AdminUsers from './pages/admin/Users'
 import AdminResults from './pages/admin/Results'
 import AdminAnalytics from './pages/admin/Analytics'
 import AdminEvaluate from './pages/admin/Evaluate'
+import SyllabusUpload from './pages/admin/SyllabusUpload'
 
 // Guards
 function PrivateRoute({ children }) {
@@ -76,6 +77,7 @@ export default function App() {
       <Route path="/admin/results" element={<AdminRoute><AdminResults /></AdminRoute>} />
       <Route path="/admin/analytics" element={<AdminRoute><AdminAnalytics /></AdminRoute>} />
       <Route path="/admin/evaluate" element={<AdminRoute><AdminEvaluate /></AdminRoute>} />
+      <Route path="/admin/syllabus" element={<AdminRoute><SyllabusUpload /></AdminRoute>} />
 
       {/* 404 */}
       <Route path="*" element={<Navigate to="/" replace />} />
