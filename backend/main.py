@@ -23,7 +23,7 @@ app = FastAPI(
 )
 
 # CORS configuration
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,https://exam-verse-nine.vercel.app,https://exam-verse-iombfefjl-subhrakantbehera8699-3748s-projects.vercel.app").split(",")
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173,https://exam-verse-aqlv4r17t-subhrakantbehera8699-3748s-projects.vercel.app,https://exam-verse-nine.vercel.app").split(",")
 allowed_origins = [origin.strip() for origin in allowed_origins]
 
 app.add_middleware(
