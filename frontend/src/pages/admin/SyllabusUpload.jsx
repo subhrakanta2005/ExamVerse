@@ -39,7 +39,6 @@ const ImportIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25H15M9 12l3 3m0 0l3-3m-3 3V2.25" />
   </svg>
 );
-// ── NEW: Search icon ──────────────────────────────────────────────────────────
 const SearchIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-6 h-6">
     <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
@@ -53,7 +52,6 @@ const difficultyColor = {
   mixed:  "bg-violet-100 text-violet-700",
 };
 
-// Map AI generator question_type → backend QuestionType enum
 const typeMap = {
   mcq:          "mcq_single",
   mcq_single:   "mcq_single",
@@ -63,26 +61,8 @@ const typeMap = {
   fill_blank:   "fill_blank",
 };
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ─────────────────────────────────────────────────────────────────────────────
-// PATCH for frontend/src/pages/admin/SyllabusUpload.jsx
-//
-// PDF text is now extracted IN THE BROWSER (pdf.js via CDN).
-// Only plain text is sent to your backend — the PDF binary never reaches Render.
-// This eliminates the memory spike that was crashing your free tier instance.
-//
-// HOW TO APPLY: Make the 3 replacements below in SyllabusUpload.jsx
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// REPLACEMENT 1
-// Paste this function just ABOVE the line:
-//   export default function SyllabusUpload() {
-// ══════════════════════════════════════════════════════════════════════════════
-
+// ── Browser-side PDF text extraction (keeps Render memory under 200MB) ────────
 async function extractTextFromPDF(file) {
-  // Load pdf.js from CDN on first use — no npm install needed
   if (!window.pdfjsLib) {
     await new Promise((resolve, reject) => {
       const script = document.createElement("script");
@@ -96,7 +76,7 @@ async function extractTextFromPDF(file) {
   }
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const maxPages = Math.min(pdf.numPages, 60); // cap at 60 pages
+  const maxPages = Math.min(pdf.numPages, 60);
   const pageTexts = [];
   for (let i = 1; i <= maxPages; i++) {
     const page = await pdf.getPage(i);
@@ -106,100 +86,15 @@ async function extractTextFromPDF(file) {
   return pageTexts.join("\n");
 }
 
-
 // ══════════════════════════════════════════════════════════════════════════════
-// REPLACEMENT 2
-// Find and replace the acceptFile function (around line 6325).
-// Change 10 MB to 20 MB.
-// ══════════════════════════════════════════════════════════════════════════════
-
-  const acceptFile = (f) => {
-    const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"];
-    if (!allowed.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
-      setErrorMsg("Only PDF, DOCX, or TXT files are supported.");
-      return;
-    }
-    if (f.size > 20 * 1024 * 1024) { setErrorMsg("File must be under 20 MB."); return; }
-    setErrorMsg("");
-    setFile(f);
-  };
-
-
-// ══════════════════════════════════════════════════════════════════════════════
-// REPLACEMENT 3
-// Find the entire else { } block inside handleGenerate that starts with:
-//   } else {
-//     // ── File / text mode: POST multipart to upload-and-generate ───────────
-// ...and ends with:
-//     data = res.data;
-//   }
-//
-// Replace that whole block with this:
-// ══════════════════════════════════════════════════════════════════════════════
-
-      } else {
-        // ── File / text mode ──────────────────────────────────────────────────
-        let extractedText = "";
-
-        if (inputMode === "file" && file) {
-          const isPDF = file.type === "application/pdf" || file.name.match(/\.pdf$/i);
-
-          if (isPDF) {
-            // Extract text in the browser — Render never loads the PDF into memory
-            setProgress(8);
-            extractedText = await extractTextFromPDF(file);
-          } else {
-            // DOCX / TXT — small files, send directly as before
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("num_questions",  config.num_questions);
-            formData.append("difficulty",     config.difficulty);
-            formData.append("question_types", config.question_types);
-            formData.append("time_limit",     config.time_limit);
-            if (config.exam_title)   formData.append("exam_title",   config.exam_title);
-            if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
-            const res = await api.post("/api/syllabus/upload-and-generate", formData, {
-              headers: { "Content-Type": "multipart/form-data" },
-              timeout: 120000,
-            });
-            data = res.data;
-            clearInterval(ticker);
-            setProgress(100);
-            setResult(data);
-            setStep("done");
-            return;
-          }
-        } else {
-          // Paste text mode
-          extractedText = syllabusText;
-        }
-
-        // Send as plain text blob — backend receives a tiny .txt file, not a PDF
-        const formData = new FormData();
-        const blob = new Blob([extractedText], { type: "text/plain" });
-        formData.append("file", blob, "syllabus.txt");
-        formData.append("num_questions",  config.num_questions);
-        formData.append("difficulty",     config.difficulty);
-        formData.append("question_types", config.question_types);
-        formData.append("time_limit",     config.time_limit);
-        if (config.exam_title)   formData.append("exam_title",   config.exam_title);
-        if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
-
-        const res = await api.post("/api/syllabus/upload-and-generate", formData, {
-          headers: { "Content-Type": "multipart/form-data" },
-          timeout: 120000,
-        });
-        data = res.data;
-      }
-
 export default function SyllabusUpload() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
   const [file, setFile] = useState(null);
   const [syllabusText, setSyllabusText] = useState("");
-  const [searchTopics, setSearchTopics] = useState("");       // ← NEW
-  const [inputMode, setInputMode] = useState("file");         // "file" | "text" | "search"
+  const [searchTopics, setSearchTopics] = useState("");
+  const [inputMode, setInputMode] = useState("file");
   const [dragging, setDragging] = useState(false);
 
   const [config, setConfig] = useState({
@@ -211,7 +106,7 @@ export default function SyllabusUpload() {
     focus_topics: "",
   });
 
-  const [step, setStep] = useState("upload"); // upload | generating | done | importing | imported | error
+  const [step, setStep] = useState("upload");
   const [progress, setProgress] = useState(0);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0, label: "" });
   const [result, setResult] = useState(null);
@@ -241,7 +136,6 @@ export default function SyllabusUpload() {
 
   // ── Generate ────────────────────────────────────────────────────────────────
   const handleGenerate = async () => {
-    // Validation per mode
     if (inputMode === "file" && !file) { setErrorMsg("Please upload a syllabus file."); return; }
     if (inputMode === "text" && syllabusText.trim().length < 50) { setErrorMsg("Please paste at least 50 characters."); return; }
     if (inputMode === "search" && searchTopics.trim().length < 3) { setErrorMsg("Please enter at least one topic to search."); return; }
@@ -257,8 +151,8 @@ export default function SyllabusUpload() {
     try {
       let data;
 
-      // ── Search mode: POST JSON to search-and-generate ──────────────────────
       if (inputMode === "search") {
+        // ── Search mode ──────────────────────────────────────────────────────
         const res = await api.post("/api/syllabus/search-and-generate", {
           topics:         searchTopics,
           num_questions:  config.num_questions,
@@ -268,15 +162,34 @@ export default function SyllabusUpload() {
           exam_title:     config.exam_title || null,
           focus_topics:   config.focus_topics || null,
           extra_context:  "",
+        }, { timeout: 120000 });
+        data = res.data;
+
+      } else if (inputMode === "file" && file && (file.type === "application/pdf" || file.name.match(/\.pdf$/i))) {
+        // ── PDF mode: extract text in browser, send as plain text ────────────
+        setProgress(8);
+        const extractedText = await extractTextFromPDF(file);
+        const formData = new FormData();
+        const blob = new Blob([extractedText], { type: "text/plain" });
+        formData.append("file", blob, "syllabus.txt");
+        formData.append("num_questions",  config.num_questions);
+        formData.append("difficulty",     config.difficulty);
+        formData.append("question_types", config.question_types);
+        formData.append("time_limit",     config.time_limit);
+        if (config.exam_title)   formData.append("exam_title",   config.exam_title);
+        if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
+        const res = await api.post("/api/syllabus/upload-and-generate", formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 120000,
         });
         data = res.data;
+
       } else {
-        // ── File / text mode: POST multipart to upload-and-generate ───────────
+        // ── DOCX / TXT / paste text mode ─────────────────────────────────────
         const formData = new FormData();
         if (inputMode === "file" && file) {
           formData.append("file", file);
         } else {
-          // wrap pasted text as a .txt blob
           const blob = new Blob([syllabusText], { type: "text/plain" });
           formData.append("file", blob, "syllabus.txt");
         }
@@ -286,9 +199,9 @@ export default function SyllabusUpload() {
         formData.append("time_limit",     config.time_limit);
         if (config.exam_title)   formData.append("exam_title",   config.exam_title);
         if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
-
         const res = await api.post("/api/syllabus/upload-and-generate", formData, {
           headers: { "Content-Type": "multipart/form-data" },
+          timeout: 120000,
         });
         data = res.data;
       }
@@ -304,7 +217,7 @@ export default function SyllabusUpload() {
     }
   };
 
-  // ── Import — saves exam + sections + questions ──────────────────────────────
+  // ── Import ──────────────────────────────────────────────────────────────────
   const handleImport = async () => {
     if (!result?.exam) return;
     setStep("importing");
@@ -333,7 +246,6 @@ export default function SyllabusUpload() {
 
       const examRes = await examAPI.create(examPayload);
       const examId = examRes.data.id;
-
       let questionsDone = 0;
 
       for (let si = 0; si < (examData.sections || []).length; si++) {
@@ -414,7 +326,6 @@ export default function SyllabusUpload() {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <div className="bg-white border-b border-gray-200 px-6 py-5">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -426,7 +337,6 @@ export default function SyllabusUpload() {
               <p className="text-sm text-gray-500">Upload a syllabus or search topics → AI creates a full exam instantly</p>
             </div>
           </div>
-          {/* ── Back button ── */}
           <button
             onClick={() => navigate("/admin")}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors border border-gray-200"
@@ -438,40 +348,29 @@ export default function SyllabusUpload() {
 
       <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
 
-        {/* ════════ IMPORTED STATE ════════ */}
+        {/* IMPORTED */}
         {step === "imported" && (
           <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
             <div className="bg-gradient-to-r from-emerald-500 to-teal-600 px-8 py-10 text-white text-center">
-              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckIcon />
-              </div>
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4"><CheckIcon /></div>
               <h2 className="text-2xl font-bold mb-1">Exam Saved to Database!</h2>
               <p className="text-emerald-100 text-sm">Live and visible to candidates immediately</p>
             </div>
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button
-                onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)}
-                className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
+              <button onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
                 Edit Exam <ArrowRightIcon />
               </button>
-              <button
-                onClick={() => navigate("/admin/exams")}
-                className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
+              <button onClick={() => navigate("/admin/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
-              <button
-                onClick={reset}
-                className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
+              <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
                 Generate Another
               </button>
             </div>
           </div>
         )}
 
-        {/* ════════ IMPORTING STATE ════════ */}
+        {/* IMPORTING */}
         {step === "importing" && (
           <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
             <div className="relative w-24 h-24 mx-auto mb-6">
@@ -480,8 +379,7 @@ export default function SyllabusUpload() {
                 <circle cx="48" cy="48" r="40" fill="none" stroke="#10b981" strokeWidth="8"
                   strokeDasharray={`${2 * Math.PI * 40}`}
                   strokeDashoffset={`${2 * Math.PI * 40 * (1 - (importProgress.total ? importProgress.current / importProgress.total : 0))}`}
-                  strokeLinecap="round"
-                  style={{ transition: "stroke-dashoffset 0.3s ease" }}
+                  strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.3s ease" }}
                 />
               </svg>
               <div className="absolute inset-0 flex items-center justify-center">
@@ -496,25 +394,20 @@ export default function SyllabusUpload() {
           </div>
         )}
 
-        {/* ════════ DONE STATE ════════ */}
+        {/* DONE */}
         {step === "done" && result && (
           <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
             <div className="bg-gradient-to-r from-indigo-600 to-violet-600 px-8 py-10 text-white text-center">
-              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckIcon />
-              </div>
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4"><CheckIcon /></div>
               <h2 className="text-2xl font-bold mb-1">Exam Generated!</h2>
               <p className="text-indigo-200 text-sm">Preview below — click "Save to Database" to make it live</p>
             </div>
-
             {errorMsg && (
               <div className="mx-8 mt-6 flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
                 <span className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center font-bold text-red-600">!</span>
                 {errorMsg}
               </div>
             )}
-
-            {/* Stats */}
             <div className="p-8 grid grid-cols-2 sm:grid-cols-4 gap-4 border-b border-gray-100">
               {[
                 { label: "Questions", value: (result.exam?.sections || []).flatMap(s => s.questions || []).length },
@@ -528,16 +421,12 @@ export default function SyllabusUpload() {
                 </div>
               ))}
             </div>
-
-            {/* Coverage report */}
             {result.coverage_report && (
               <div className="px-8 py-4 bg-gray-50 border-b border-gray-100 text-sm text-gray-600">
                 Coverage: <span className="font-semibold text-indigo-600">{result.coverage_report.coverage_percentage}%</span>
                 {result.coverage_report.note && <span className="ml-3 text-xs text-gray-400">{result.coverage_report.note}</span>}
               </div>
             )}
-
-            {/* Preview first 5 questions */}
             {(result.exam?.sections || []).flatMap(s => s.questions || []).slice(0, 5).length > 0 && (
               <div className="px-8 py-6 space-y-4 border-b border-gray-100">
                 <h3 className="text-sm font-semibold text-gray-700">Question Preview (first 5)</h3>
@@ -554,33 +443,21 @@ export default function SyllabusUpload() {
                 ))}
               </div>
             )}
-
-            {/* Action buttons */}
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button
-                onClick={handleImport}
-                className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
-                <ImportIcon />
-                Save to Database
+              <button onClick={handleImport} className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+                <ImportIcon /> Save to Database
               </button>
-              <button
-                onClick={() => navigate("/admin/exams")}
-                className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
+              <button onClick={() => navigate("/admin/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
-              <button
-                onClick={reset}
-                className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors"
-              >
+              <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
                 Start Over
               </button>
             </div>
           </div>
         )}
 
-        {/* ════════ GENERATING STATE ════════ */}
+        {/* GENERATING */}
         {step === "generating" && (
           <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
             <div className="relative w-24 h-24 mx-auto mb-6">
@@ -589,8 +466,7 @@ export default function SyllabusUpload() {
                 <circle cx="48" cy="48" r="40" fill="none" stroke="#4f46e5" strokeWidth="8"
                   strokeDasharray={`${2 * Math.PI * 40}`}
                   strokeDashoffset={`${2 * Math.PI * 40 * (1 - progress / 100)}`}
-                  strokeLinecap="round"
-                  style={{ transition: "stroke-dashoffset 0.5s ease" }}
+                  strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.5s ease" }}
                 />
               </svg>
               <div className="absolute inset-0 flex items-center justify-center">
@@ -603,7 +479,7 @@ export default function SyllabusUpload() {
             <p className="text-sm text-gray-500 mb-6">
               {inputMode === "search"
                 ? "Searching the web for your topics and crafting questions. Takes ~15–30 seconds."
-                : "Reading your syllabus and crafting questions. Takes ~10–20 seconds."}
+                : progress < 15 ? "Extracting text from your PDF…" : "Sending to AI and generating questions. Takes ~20–40 seconds."}
             </p>
             <div className="space-y-2 max-w-xs mx-auto text-left">
               {(inputMode === "search"
@@ -615,8 +491,8 @@ export default function SyllabusUpload() {
                     { label: "Finalising output",        done: progress >= 100 },
                   ]
                 : [
-                    { label: "Reading syllabus content", done: progress > 15 },
-                    { label: "Identifying key topics",   done: progress > 35 },
+                    { label: "Extracting PDF text",      done: progress > 10 },
+                    { label: "Sending to Gemini AI",     done: progress > 20 },
                     { label: "Generating questions",     done: progress > 65 },
                     { label: "Structuring exam format",  done: progress > 85 },
                     { label: "Finalising output",        done: progress >= 100 },
@@ -633,7 +509,7 @@ export default function SyllabusUpload() {
           </div>
         )}
 
-        {/* ════════ UPLOAD STATE ════════ */}
+        {/* UPLOAD */}
         {(step === "upload" || step === "error") && (
           <>
             {errorMsg && (
@@ -644,31 +520,19 @@ export default function SyllabusUpload() {
               </div>
             )}
 
-            {/* ── Syllabus Input ─────────────────────────────────────────────── */}
             <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
                 <h2 className="font-semibold text-gray-900">1. Syllabus Content</h2>
-                {/* ── Three-tab switcher ── */}
                 <div className="flex rounded-lg overflow-hidden border border-gray-200 text-sm">
-                  <button
-                    onClick={() => setInputMode("file")}
-                    className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "file" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
-                  >
+                  <button onClick={() => setInputMode("file")} className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "file" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}>
                     <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M3 3.5A1.5 1.5 0 014.5 2h6.879a1.5 1.5 0 011.06.44l4.122 4.12A1.5 1.5 0 0117 7.622V16.5a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16.5v-13z" /></svg>
                     Upload File
                   </button>
-                  <button
-                    onClick={() => setInputMode("text")}
-                    className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "text" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
-                  >
+                  <button onClick={() => setInputMode("text")} className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "text" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}>
                     <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>
                     Paste Text
                   </button>
-                  {/* ── NEW: Search tab ── */}
-                  <button
-                    onClick={() => setInputMode("search")}
-                    className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "search" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
-                  >
+                  <button onClick={() => setInputMode("search")} className={`px-4 py-1.5 font-medium transition-colors flex items-center gap-1.5 ${inputMode === "search" ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}>
                     <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" /></svg>
                     Search Topics
                   </button>
@@ -676,7 +540,6 @@ export default function SyllabusUpload() {
               </div>
 
               <div className="p-6">
-                {/* ── File upload panel ── */}
                 {inputMode === "file" && (
                   file ? (
                     <div className="flex items-center gap-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
@@ -703,7 +566,6 @@ export default function SyllabusUpload() {
                   )
                 )}
 
-                {/* ── Paste text panel ── */}
                 {inputMode === "text" && (
                   <div>
                     <textarea
@@ -719,44 +581,32 @@ export default function SyllabusUpload() {
                   </div>
                 )}
 
-                {/* ── NEW: Search topics panel ── */}
                 {inputMode === "search" && (
                   <div className="space-y-4">
                     <div className="flex items-start gap-3 p-4 bg-indigo-50 border border-indigo-100 rounded-xl">
                       <div className="text-indigo-500 mt-0.5 flex-shrink-0"><SearchIcon /></div>
                       <div>
                         <p className="text-sm font-medium text-indigo-800 mb-0.5">Web Search Mode</p>
-                        <p className="text-xs text-indigo-600">
-                          Enter topics and the AI will search the web for current content, then generate questions from what it finds. Great for any subject — no file needed.
-                        </p>
+                        <p className="text-xs text-indigo-600">Enter topics and the AI will search the web for current content, then generate questions from what it finds.</p>
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        Topics to search <span className="text-red-400">*</span>
-                      </label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Topics to search <span className="text-red-400">*</span></label>
                       <textarea
                         value={searchTopics}
                         onChange={e => setSearchTopics(e.target.value)}
-                        placeholder={"Enter topics separated by commas or new lines…\n\nExamples:\nOdisha History, Indian Constitution, General Science\nMathematics - Algebra, Trigonometry\nEnglish Grammar, Comprehension"}
+                        placeholder={"Enter topics separated by commas or new lines…\n\nExamples:\nOdisha History, Indian Constitution, General Science"}
                         className="w-full h-36 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                       />
-                      <p className="text-xs text-gray-400 mt-1.5">
-                        {searchTopics.trim().length} characters
-                        {searchTopics.trim().length > 0 && searchTopics.trim().length < 3 && (
-                          <span className="text-amber-500 ml-1">(enter at least one topic)</span>
-                        )}
-                      </p>
                     </div>
                     <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-700">
-                      💡 <strong>Tip:</strong> More specific topics = better questions. Try "Odisha Geography — rivers and mountains" instead of just "Geography".
+                      💡 <strong>Tip:</strong> More specific topics = better questions.
                     </div>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* ── Exam Configuration ─────────────────────────────────────────── */}
             <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-100">
                 <h2 className="font-semibold text-gray-900">2. Exam Configuration</h2>
@@ -764,13 +614,7 @@ export default function SyllabusUpload() {
               <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div className="sm:col-span-2">
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Exam Title <span className="text-gray-400 font-normal">(optional)</span></label>
-                  <input
-                    type="text"
-                    value={config.exam_title}
-                    onChange={e => updateConfig("exam_title", e.target.value)}
-                    placeholder="e.g. OSSSC RI/ARI Mock Test"
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
-                  />
+                  <input type="text" value={config.exam_title} onChange={e => updateConfig("exam_title", e.target.value)} placeholder="e.g. OSSSC RI/ARI Mock Test" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Questions: <span className="text-indigo-600 font-bold">{config.num_questions}</span></label>
@@ -801,41 +645,23 @@ export default function SyllabusUpload() {
                   </div>
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    Focus Topics <span className="text-gray-400 font-normal">(optional, comma-separated)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={config.focus_topics}
-                    onChange={e => updateConfig("focus_topics", e.target.value)}
-                    placeholder="e.g. Odisha Geography, Indian History"
-                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
-                  />
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Focus Topics <span className="text-gray-400 font-normal">(optional, comma-separated)</span></label>
+                  <input type="text" value={config.focus_topics} onChange={e => updateConfig("focus_topics", e.target.value)} placeholder="e.g. Odisha Geography, Indian History" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                 </div>
               </div>
             </div>
 
-            {/* ── Review & Generate ──────────────────────────────────────────── */}
             <div className="bg-white rounded-2xl border border-gray-200 p-6">
               <h2 className="font-semibold text-gray-900 mb-4">3. Review & Generate</h2>
               <div className="flex flex-wrap gap-2 mb-6">
                 <span className="px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-sm">{config.num_questions} questions</span>
                 <span className={`px-3 py-1 rounded-full text-sm capitalize ${difficultyColor[config.difficulty]}`}>{config.difficulty}</span>
                 <span className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-sm">{config.time_limit} min</span>
-                {inputMode === "file" && file && (
-                  <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-sm">📄 {file.name}</span>
-                )}
-                {inputMode === "search" && searchTopics.trim() && (
-                  <span className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm">🔍 Web search</span>
-                )}
-                {inputMode === "text" && syllabusText.trim() && (
-                  <span className="px-3 py-1 bg-purple-50 text-purple-700 rounded-full text-sm">📝 Pasted text</span>
-                )}
+                {inputMode === "file" && file && <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-sm">📄 {file.name}</span>}
+                {inputMode === "search" && searchTopics.trim() && <span className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm">🔍 Web search</span>}
+                {inputMode === "text" && syllabusText.trim() && <span className="px-3 py-1 bg-purple-50 text-purple-700 rounded-full text-sm">📝 Pasted text</span>}
               </div>
-              <button
-                onClick={handleGenerate}
-                className="w-full flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold py-4 rounded-xl text-base transition-all"
-              >
+              <button onClick={handleGenerate} className="w-full flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold py-4 rounded-xl text-base transition-all">
                 <SparkIcon />
                 {inputMode === "search" ? "Search & Generate Exam" : "Generate Exam"}
               </button>
