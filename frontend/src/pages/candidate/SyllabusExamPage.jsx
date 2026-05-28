@@ -28,6 +28,12 @@ const FlagIcon = () => (
     <path strokeLinecap="round" strokeLinejoin="round" d="M3 3v18m0-16.5l6-1.5 6 1.5 6-1.5V18l-6 1.5-6-1.5-6 1.5" />
   </svg>
 );
+// ── NEW: Arrow left for back button ──────────────────────────────────────────
+const ArrowLeftIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+  </svg>
+);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const difficultyColor = {
@@ -64,7 +70,6 @@ export default function ExamPage() {
   const location = useLocation();
   const navigate  = useNavigate();
 
-  // Exam + session passed via router state from SyllabusUpload or exam list
   const { exam, sessionId: existingSessionId, candidateName } =
     location.state || {};
 
@@ -72,9 +77,9 @@ export default function ExamPage() {
   const [questions,    setQuestions]    = useState([]);
   const [currentIdx,  setCurrentIdx]   = useState(0);
   const [answer,      setAnswer]       = useState("");
-  const [feedback,    setFeedback]     = useState(null);   // result of /answer
+  const [feedback,    setFeedback]     = useState(null);
   const [progress,    setProgress]     = useState(null);
-  const [answered,    setAnswered]     = useState({});     // idx → feedback
+  const [answered,    setAnswered]     = useState({});
   const [timeLeft,    setTimeLeft]     = useState(null);
   const [loading,     setLoading]      = useState(false);
   const [finishing,   setFinishing]    = useState(false);
@@ -83,7 +88,7 @@ export default function ExamPage() {
 
   // ── Start session on mount ─────────────────────────────────────────────────
   useEffect(() => {
-    if (!exam) { navigate("/"); return; }
+    if (!exam) { navigate("/dashboard"); return; }
 
     const qs = flattenQuestions(exam);
     setQuestions(qs);
@@ -105,7 +110,7 @@ export default function ExamPage() {
       }
     }
     startSession();
-  }, []);  // eslint-disable-line
+  }, []); // eslint-disable-line
 
   // ── Countdown timer ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -113,7 +118,7 @@ export default function ExamPage() {
     if (timeLeft <= 0) { handleFinish(); return; }
     timerRef.current = setTimeout(() => setTimeLeft(t => t - 1), 1000);
     return () => clearTimeout(timerRef.current);
-  }, [timeLeft]);  // eslint-disable-line
+  }, [timeLeft]); // eslint-disable-line
 
   const currentQ = questions[currentIdx];
 
@@ -167,9 +172,17 @@ export default function ExamPage() {
     }
   }, [sessionId, finishing, navigate]);
 
+  // ── NEW: Exit exam with confirmation ───────────────────────────────────────
+  const handleExit = () => {
+    if (window.confirm("Are you sure you want to exit? Your progress will be lost.")) {
+      clearTimeout(timerRef.current);
+      navigate("/dashboard");
+    }
+  };
+
   // ── MCQ option click ───────────────────────────────────────────────────────
   const handleOptionClick = (optText) => {
-    if (feedback) return;   // already answered
+    if (feedback) return;
     setAnswer(optText);
     handleSubmitAnswer(optText);
   };
@@ -193,7 +206,18 @@ export default function ExamPage() {
 
       {/* ── Top bar ──────────────────────────────────────────────────────── */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
+
+          {/* ── NEW: Exit / Back button ── */}
+          <button
+            onClick={handleExit}
+            title="Exit exam"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
+              text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors flex-shrink-0"
+          >
+            <ArrowLeftIcon />
+            <span className="hidden sm:inline">Exit</span>
+          </button>
 
           {/* Progress bar */}
           <div className="flex-1">
@@ -213,7 +237,7 @@ export default function ExamPage() {
 
           {/* Score so far */}
           {progress && (
-            <div className="text-center hidden sm:block">
+            <div className="text-center hidden sm:block flex-shrink-0">
               <p className="text-xs text-slate-400">Score</p>
               <p className="text-sm font-semibold text-slate-700">
                 {progress.score_so_far}/{progress.max_so_far}
@@ -223,7 +247,7 @@ export default function ExamPage() {
 
           {/* Timer */}
           {timeLeft !== null && (
-            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-mono font-semibold
+            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-mono font-semibold flex-shrink-0
               ${timerWarning
                 ? "bg-red-50 text-red-600 animate-pulse"
                 : "bg-slate-100 text-slate-600"
@@ -238,10 +262,10 @@ export default function ExamPage() {
             onClick={handleFinish}
             disabled={finishing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium
-              text-slate-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+              text-slate-500 hover:text-red-600 hover:bg-red-50 transition-colors flex-shrink-0"
           >
             <FlagIcon />
-            <span className="hidden sm:inline">Finish</span>
+            <span className="hidden sm:inline">{finishing ? "Submitting…" : "Finish"}</span>
           </button>
         </div>
       </header>
