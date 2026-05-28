@@ -64,6 +64,134 @@ const typeMap = {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH for frontend/src/pages/admin/SyllabusUpload.jsx
+//
+// PDF text is now extracted IN THE BROWSER (pdf.js via CDN).
+// Only plain text is sent to your backend — the PDF binary never reaches Render.
+// This eliminates the memory spike that was crashing your free tier instance.
+//
+// HOW TO APPLY: Make the 3 replacements below in SyllabusUpload.jsx
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REPLACEMENT 1
+// Paste this function just ABOVE the line:
+//   export default function SyllabusUpload() {
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function extractTextFromPDF(file) {
+  // Load pdf.js from CDN on first use — no npm install needed
+  if (!window.pdfjsLib) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const maxPages = Math.min(pdf.numPages, 60); // cap at 60 pages
+  const pageTexts = [];
+  for (let i = 1; i <= maxPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    pageTexts.push(content.items.map((item) => item.str).join(" "));
+  }
+  return pageTexts.join("\n");
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REPLACEMENT 2
+// Find and replace the acceptFile function (around line 6325).
+// Change 10 MB to 20 MB.
+// ══════════════════════════════════════════════════════════════════════════════
+
+  const acceptFile = (f) => {
+    const allowed = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"];
+    if (!allowed.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
+      setErrorMsg("Only PDF, DOCX, or TXT files are supported.");
+      return;
+    }
+    if (f.size > 20 * 1024 * 1024) { setErrorMsg("File must be under 20 MB."); return; }
+    setErrorMsg("");
+    setFile(f);
+  };
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REPLACEMENT 3
+// Find the entire else { } block inside handleGenerate that starts with:
+//   } else {
+//     // ── File / text mode: POST multipart to upload-and-generate ───────────
+// ...and ends with:
+//     data = res.data;
+//   }
+//
+// Replace that whole block with this:
+// ══════════════════════════════════════════════════════════════════════════════
+
+      } else {
+        // ── File / text mode ──────────────────────────────────────────────────
+        let extractedText = "";
+
+        if (inputMode === "file" && file) {
+          const isPDF = file.type === "application/pdf" || file.name.match(/\.pdf$/i);
+
+          if (isPDF) {
+            // Extract text in the browser — Render never loads the PDF into memory
+            setProgress(8);
+            extractedText = await extractTextFromPDF(file);
+          } else {
+            // DOCX / TXT — small files, send directly as before
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("num_questions",  config.num_questions);
+            formData.append("difficulty",     config.difficulty);
+            formData.append("question_types", config.question_types);
+            formData.append("time_limit",     config.time_limit);
+            if (config.exam_title)   formData.append("exam_title",   config.exam_title);
+            if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
+            const res = await api.post("/api/syllabus/upload-and-generate", formData, {
+              headers: { "Content-Type": "multipart/form-data" },
+              timeout: 120000,
+            });
+            data = res.data;
+            clearInterval(ticker);
+            setProgress(100);
+            setResult(data);
+            setStep("done");
+            return;
+          }
+        } else {
+          // Paste text mode
+          extractedText = syllabusText;
+        }
+
+        // Send as plain text blob — backend receives a tiny .txt file, not a PDF
+        const formData = new FormData();
+        const blob = new Blob([extractedText], { type: "text/plain" });
+        formData.append("file", blob, "syllabus.txt");
+        formData.append("num_questions",  config.num_questions);
+        formData.append("difficulty",     config.difficulty);
+        formData.append("question_types", config.question_types);
+        formData.append("time_limit",     config.time_limit);
+        if (config.exam_title)   formData.append("exam_title",   config.exam_title);
+        if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
+
+        const res = await api.post("/api/syllabus/upload-and-generate", formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 120000,
+        });
+        data = res.data;
+      }
+
 export default function SyllabusUpload() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
