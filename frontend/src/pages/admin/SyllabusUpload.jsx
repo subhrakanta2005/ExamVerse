@@ -104,7 +104,7 @@ export default function SyllabusUpload() {
       setErrorMsg("Only PDF, DOCX, or TXT files are supported.");
       return;
     }
-    if (f.size > 10 * 1024 * 1024) { setErrorMsg("File must be under 10 MB."); return; }
+    if (f.size > 20 * 1024 * 1024) { setErrorMsg("File must be under 20 MB."); return; }
     setErrorMsg("");
     setFile(f);
   };
@@ -570,7 +570,7 @@ export default function SyllabusUpload() {
                       <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="hidden" onChange={e => e.target.files[0] && acceptFile(e.target.files[0])} />
                       <div className={`inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4 transition-colors ${dragging ? "bg-indigo-100 text-indigo-600" : "bg-gray-100 text-gray-400"}`}><UploadIcon /></div>
                       <p className="font-semibold text-gray-700 mb-1">Drop your syllabus here</p>
-                      <p className="text-sm text-gray-400">or click to browse — PDF, DOCX, or TXT up to 10 MB</p>
+                      <p className="text-sm text-gray-400">or click to browse — PDF, DOCX, or TXT up to 20 MB</p>
                     </div>
                   )
                 )}
