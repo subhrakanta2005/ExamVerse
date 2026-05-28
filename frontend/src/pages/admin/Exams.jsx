@@ -62,7 +62,7 @@ export default function AdminExams() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-slate-800">
-                  {['Title', 'Duration', 'Marks', 'Sections', 'Status', 'Window', 'Actions'].map(h => (
+                  {['Title', 'Duration', 'Marks', 'Questions', 'Status', 'Window', 'Actions'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -78,19 +78,26 @@ export default function AdminExams() {
                     </td>
                     <td className="px-4 py-4 text-slate-400 text-sm font-mono">{exam.duration_minutes}m</td>
                     <td className="px-4 py-4 text-slate-400 text-sm font-mono">{exam.total_marks}</td>
-                    <td className="px-4 py-4 text-slate-400 text-sm">{exam.section_count ?? '—'}</td>
+                    <td className="px-4 py-4 text-slate-400 text-sm">
+                      {/* FIX: was exam.section_count (doesn't exist) — backend returns question_count */}
+                      {exam.question_count ?? '—'}
+                    </td>
                     <td className="px-4 py-4">
-                      <span className={(exam.is_active && exam.is_public) ? 'badge-green' : exam.is_active ? 'badge-blue' : 'badge-gray'}>
-                        {(exam.is_active && exam.is_public) ? 'Published' : exam.is_active ? 'Active' : 'Draft'}
+                      <span className={
+                        (exam.is_active && exam.is_public) ? 'badge-green' :
+                        exam.is_active ? 'badge-blue' : 'badge-gray'
+                      }>
+                        {(exam.is_active && exam.is_public) ? 'Published' :
+                         exam.is_active ? 'Active' : 'Draft'}
                       </span>
                     </td>
                     <td className="px-4 py-4 text-slate-500 text-xs">
                       {exam.start_time
-  ? new Date(exam.start_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
-  : 'Always'}
-{exam.end_time
-  ? ` – ${new Date(exam.end_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}`
-  : ''}
+                        ? new Date(exam.start_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
+                        : 'Always'}
+                      {exam.end_time
+                        ? ` – ${new Date(exam.end_time).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}`
+                        : ''}
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-3">

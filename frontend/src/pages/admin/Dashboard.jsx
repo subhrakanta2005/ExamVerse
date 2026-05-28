@@ -52,20 +52,26 @@ export default function AdminDashboard() {
           <>
             {/* Stats */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <StatCard label="Total Users" value={overview?.total_users} icon="◉" color="text-white" sub="Registered accounts" />
-              <StatCard label="Active Exams" value={overview?.active_exams} icon="◈" color="text-brand-400" sub="Published & live" />
-              <StatCard label="Total Attempts" value={overview?.total_attempts} icon="◎" color="text-emerald-400" sub="All time" />
-              <StatCard label="Avg Score" value={overview?.avg_score != null ? `${overview.avg_score.toFixed(1)}%` : '—'} icon="◭" color="text-amber-400" sub="Across all exams" />
+              <StatCard label="Total Users"    value={overview?.total_users}    icon="◉" color="text-white"      sub="Registered accounts" />
+              <StatCard label="Active Exams"   value={overview?.active_exams}   icon="◈" color="text-brand-400"  sub="Published & live" />
+              <StatCard label="Total Attempts" value={overview?.total_attempts}  icon="◎" color="text-emerald-400" sub="All time" />
+              <StatCard
+                label="Avg Score"
+                value={overview?.avg_score != null ? `${overview.avg_score.toFixed(1)}%` : '—'}
+                icon="◭"
+                color="text-amber-400"
+                sub="Across all exams"
+              />
             </div>
 
             {/* Quick links */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               {[
-                { to: '/admin/exams', label: 'Manage Exams', desc: 'Create, edit, delete exams', icon: '◈', color: 'border-brand-500/30 hover:border-brand-500/60' },
-                { to: '/admin/users', label: 'User Management', desc: 'View and manage candidates', icon: '◉', color: 'border-emerald-500/30 hover:border-emerald-500/60' },
-                { to: '/admin/results', label: 'Results', desc: 'Publish and review scores', icon: '◎', color: 'border-amber-500/30 hover:border-amber-500/60' },
-                { to: '/admin/evaluate', label: 'Manual Evaluate', desc: 'Review subjective answers', icon: '◐', color: 'border-purple-500/30 hover:border-purple-500/60' },
-                { to: '/admin/analytics', label: 'Analytics', desc: 'Charts & leaderboards', icon: '◭', color: 'border-cyan-500/30 hover:border-cyan-500/60' },
+                { to: '/admin/exams',    label: 'Manage Exams',     desc: 'Create, edit, delete exams',      icon: '◈', color: 'border-brand-500/30 hover:border-brand-500/60' },
+                { to: '/admin/users',    label: 'User Management',  desc: 'View and manage candidates',      icon: '◉', color: 'border-emerald-500/30 hover:border-emerald-500/60' },
+                { to: '/admin/results',  label: 'Results',          desc: 'Publish and review scores',       icon: '◎', color: 'border-amber-500/30 hover:border-amber-500/60' },
+                { to: '/admin/evaluate', label: 'Manual Evaluate',  desc: 'Review subjective answers',       icon: '◐', color: 'border-purple-500/30 hover:border-purple-500/60' },
+                { to: '/admin/analytics',label: 'Analytics',        desc: 'Charts & leaderboards',           icon: '◭', color: 'border-cyan-500/30 hover:border-cyan-500/60' },
               ].map(({ to, label, desc, icon, color }) => (
                 <Link
                   key={to}
@@ -101,8 +107,9 @@ export default function AdminDashboard() {
                         <td className="px-4 py-3 text-slate-400 text-sm">{exam.duration_minutes}m</td>
                         <td className="px-4 py-3 text-slate-400 text-sm">{exam.question_count ?? '—'}</td>
                         <td className="px-4 py-3">
-                          <span className={exam.is_published ? 'badge-green' : 'badge-gray'}>
-                            {exam.is_published ? 'Published' : 'Draft'}
+                          {/* FIX: was exam.is_published (doesn't exist) — use exam.is_active */}
+                          <span className={exam.is_active ? 'badge-green' : 'badge-gray'}>
+                            {exam.is_active ? 'Active' : 'Draft'}
                           </span>
                         </td>
                         <td className="px-4 py-3">
