@@ -1,392 +1,253 @@
 """
-ExamVerse / ExamForge — Per-Question Evaluation Engine
-=======================================================
-File:  backend/routers/evaluation.py
+backend/routers/evaluation.py
+==============================
+In-memory evaluation engine for AI-generated (syllabus-based) exams.
 
-Endpoints:
-  POST /api/evaluation/answer        — evaluate one answer, update session
-  GET  /api/evaluation/session/{id}  — get current session state
-  POST /api/evaluation/finish/{id}   — close session, get final report
-  POST /api/evaluation/start         — create a new attempt session
-
-Registration — add to backend/main.py:
-  from routers.evaluation import router as evaluation_router
-  app.include_router(evaluation_router, prefix="/api/evaluation", tags=["evaluation"])
+Endpoints consumed by SyllabusExamPage.jsx and SyllabusResultPage.jsx:
+  POST /api/evaluation/start
+  POST /api/evaluation/answer
+  POST /api/evaluation/finish/{session_id}
 """
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
-import uuid, time
+from typing import Any, Dict, List, Optional
+import uuid
+import time
 
 router = APIRouter()
 
-# ── In-memory session store ────────────────────────────────────────────────────
-# Each session holds the full exam structure + candidate's answers so far.
-# For production: replace with Redis or a DB table.
-_SESSIONS: dict[str, dict] = {}
-SESSION_TTL = 60 * 60 * 3   # 3 hours
-
-def _prune_expired():
-    now = time.time()
-    expired = [k for k, v in _SESSIONS.items() if now - v["started_at"] > SESSION_TTL]
-    for k in expired:
-        del _SESSIONS[k]
+# ── In-memory session store  {session_id: SessionState} ──────────────────────
+_sessions: Dict[str, Dict[str, Any]] = {}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MODELS
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Request / response schemas ─────────────────────────────────────────────────
 
-class StartSessionRequest(BaseModel):
-    exam: dict                        # the full exam object from /api/syllabus/upload-and-generate
-    candidate_name: Optional[str] = "Anonymous"
-    candidate_id:   Optional[str] = None
+class StartRequest(BaseModel):
+    exam: Dict[str, Any]
+    candidate_name: Optional[str] = "Candidate"
 
 
 class AnswerRequest(BaseModel):
-    session_id:   str
-    question_idx: int                 # 0-based global index across all sections
-    answer:       str                 # candidate's answer text or option text
+    session_id: str
+    question_idx: int
+    answer: str
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _flatten_questions(exam: dict) -> list[dict]:
-    """Return all questions as a flat list with section info attached."""
+def _flatten_questions(exam: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Flatten exam sections → ordered question list (mirrors frontend flattenQuestions)."""
     flat = []
     for sec in exam.get("sections", []):
         for q in sec.get("questions", []):
-            flat.append({**q, "_section": sec["title"]})
+            flat.append({**q, "_section": sec.get("title", "General")})
     return flat
 
 
-def _evaluate_answer(question: dict, candidate_answer: str) -> dict:
+def _check_answer(question: Dict[str, Any], submitted: str) -> Dict[str, Any]:
     """
-    Compare candidate_answer to the question's correct answer.
-    Returns: { is_correct, marks_awarded, correct_answer, explanation, feedback }
+    Evaluate a submitted answer against a question dict.
+    Returns dict with: is_correct, marks_awarded, marks_possible, correct_answer, explanation
     """
-    q_type  = question.get("question_type", "mcq")
-    marks   = question.get("marks", 1)
-    correct = str(question.get("correct_answer", "")).strip()
-    given   = candidate_answer.strip()
+    q_type        = question.get("question_type", "mcq")
+    marks_possible = float(question.get("marks", 1))
+    explanation   = question.get("explanation", "")
+    options       = question.get("options", [])
 
-    # ── MCQ: match option text or option label (A/B/C/D) ──────────────────────
-    if q_type == "mcq":
-        # Find the correct option text from the options list
-        correct_option_text = correct
-        for opt in question.get("options", []):
-            if opt.get("is_correct"):
-                correct_option_text = opt["text"]
-                break
+    # Find correct option text
+    correct_text = ""
+    for opt in options:
+        if opt.get("is_correct"):
+            correct_text = opt.get("text", "")
+            break
 
-        is_correct = given.lower() == correct_option_text.lower()
+    # Fall back to correct_answer field (used by AI generator)
+    if not correct_text:
+        correct_text = question.get("correct_answer", "")
 
-    # ── True/False ─────────────────────────────────────────────────────────────
-    elif q_type == "true_false":
-        # Accept "true"/"false", "yes"/"no", "t"/"f"
-        true_aliases  = {"true", "t", "yes", "y", "1"}
-        false_aliases = {"false", "f", "no", "n", "0"}
-        given_norm   = given.lower()
-        correct_norm = correct.lower()
+    # Normalise for comparison
+    submitted_norm = submitted.strip().lower()
+    correct_norm   = correct_text.strip().lower()
 
-        if correct_norm in true_aliases:
-            is_correct = given_norm in true_aliases
-        elif correct_norm in false_aliases:
-            is_correct = given_norm in false_aliases
-        else:
-            is_correct = given_norm == correct_norm
+    is_correct = submitted_norm == correct_norm
 
-    # ── Short answer / fill-in-the-blank ──────────────────────────────────────
-    else:
-        # Case-insensitive, strip punctuation, partial match allowed
-        import re
-        def normalise(s):
-            return re.sub(r'[^a-z0-9\s]', '', s.lower()).strip()
+    # True/False: also accept "true"/"false" matching
+    if q_type == "true_false" and not is_correct:
+        is_correct = submitted_norm in ("true", "false") and submitted_norm == correct_norm
 
-        gn = normalise(given)
-        cn = normalise(correct)
-        is_correct = (gn == cn) or (cn and cn in gn) or (gn and gn in cn)
-
-    marks_awarded = marks if is_correct else 0
-
-    # Feedback message
-    if is_correct:
-        feedback = "✅ Correct!"
-    else:
-        feedback = f"❌ Incorrect. The correct answer is: {_correct_display(question)}"
+    marks_awarded = marks_possible if is_correct else 0.0
 
     return {
         "is_correct":     is_correct,
         "marks_awarded":  marks_awarded,
-        "marks_possible": marks,
-        "correct_answer": _correct_display(question),
-        "explanation":    question.get("explanation", ""),
-        "feedback":       feedback,
+        "marks_possible": marks_possible,
+        "correct_answer": correct_text,
+        "explanation":    explanation,
     }
 
 
-def _correct_display(question: dict) -> str:
-    """Return a human-readable correct answer string."""
-    for opt in question.get("options", []):
-        if opt.get("is_correct"):
-            return opt["text"]
-    return str(question.get("correct_answer", ""))
-
-
-def _build_topic_breakdown(answers: list[dict], questions: list[dict]) -> list[dict]:
-    """Group scores by section/topic."""
-    topic_data: dict[str, dict] = {}
-    for i, ans in enumerate(answers):
-        if ans is None:
-            continue
-        q   = questions[i]
-        sec = q.get("_section", "General")
-        if sec not in topic_data:
-            topic_data[sec] = {"correct": 0, "total": 0, "marks_earned": 0, "marks_possible": 0}
-        topic_data[sec]["total"]          += 1
-        topic_data[sec]["marks_possible"] += q.get("marks", 1)
-        if ans.get("is_correct"):
-            topic_data[sec]["correct"]     += 1
-            topic_data[sec]["marks_earned"] += ans.get("marks_awarded", 0)
-
-    return [
-        {
-            "topic":           sec,
-            "questions_seen":  d["total"],
-            "correct":         d["correct"],
-            "marks_earned":    d["marks_earned"],
-            "marks_possible":  d["marks_possible"],
-            "accuracy_pct":    round(d["correct"] / d["total"] * 100, 1) if d["total"] else 0,
-        }
-        for sec, d in topic_data.items()
-    ]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
-async def start_session(req: StartSessionRequest):
+async def start_session(body: StartRequest):
     """
-    Create a new exam attempt session.
-    Call this when a candidate clicks 'Start Exam'.
-
-    Returns: { session_id, total_questions, exam_title }
+    Create an evaluation session for a generated exam.
+    Returns session_id + duration_minutes.
     """
-    _prune_expired()
+    session_id = str(uuid.uuid4())
+    questions  = _flatten_questions(body.exam)
 
-    questions = _flatten_questions(req.exam)
     if not questions:
         raise HTTPException(status_code=400, detail="Exam has no questions.")
 
-    session_id = str(uuid.uuid4())
-    _SESSIONS[session_id] = {
-        "session_id":     session_id,
-        "candidate_name": req.candidate_name,
-        "candidate_id":   req.candidate_id,
-        "exam":           req.exam,
-        "questions":      questions,          # flat list with _section attached
-        "answers":        [None] * len(questions),  # filled as candidate answers
+    _sessions[session_id] = {
+        "exam":           body.exam,
+        "candidate_name": body.candidate_name or "Candidate",
+        "questions":      questions,
+        "answers":        {},          # question_idx → answer result
         "started_at":     time.time(),
-        "finished_at":    None,
-        "finished":       False,
     }
 
     return {
-        "session_id":      session_id,
-        "total_questions": len(questions),
-        "exam_title":      req.exam.get("title", "Exam"),
-        "duration_minutes": req.exam.get("duration_minutes", 30),
-        "total_marks":     req.exam.get("total_marks", len(questions)),
+        "session_id":       session_id,
+        "duration_minutes": body.exam.get("duration_minutes", 30),
+        "total_questions":  len(questions),
     }
 
 
 @router.post("/answer")
-async def submit_answer(req: AnswerRequest):
+async def submit_answer(body: AnswerRequest):
     """
-    Evaluate one answer as the candidate submits it.
-
-    Returns immediate feedback:
-    {
-      "is_correct": bool,
-      "marks_awarded": int,
-      "marks_possible": int,
-      "correct_answer": str,
-      "explanation": str,
-      "feedback": str,
-      "progress": {
-          "answered": int, "total": int,
-          "score_so_far": int, "max_so_far": int,
-          "percentage_so_far": float
-      }
-    }
+    Evaluate a single answer and return immediate feedback.
+    Idempotent — re-submitting the same question_idx overwrites the previous answer.
     """
-    session = _SESSIONS.get(req.session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired.")
-    if session["finished"]:
-        raise HTTPException(status_code=400, detail="This session is already finished.")
-
-    questions = session["questions"]
-    if req.question_idx < 0 or req.question_idx >= len(questions):
-        raise HTTPException(
-            status_code=400,
-            detail=f"question_idx must be 0–{len(questions) - 1}.",
-        )
-
-    question = questions[req.question_idx]
-    result   = _evaluate_answer(question, req.answer)
-
-    # Store result
-    session["answers"][req.question_idx] = {
-        **result,
-        "given_answer": req.answer,
-        "question_idx": req.question_idx,
-    }
-
-    # Live progress
-    answered = [a for a in session["answers"] if a is not None]
-    score_so_far = sum(a["marks_awarded"] for a in answered)
-    max_so_far   = sum(questions[i]["marks"] for i, a in enumerate(session["answers"]) if a is not None)
-
-    return JSONResponse({
-        **result,
-        "progress": {
-            "answered":          len(answered),
-            "total":             len(questions),
-            "score_so_far":      score_so_far,
-            "max_so_far":        max_so_far,
-            "percentage_so_far": round(score_so_far / max_so_far * 100, 1) if max_so_far else 0,
-        },
-    })
-
-
-@router.get("/session/{session_id}")
-async def get_session(session_id: str):
-    """
-    Get the current state of an exam session.
-    Useful to restore state if the page refreshes.
-    """
-    session = _SESSIONS.get(session_id)
+    session = _sessions.get(body.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found or expired.")
 
     questions = session["questions"]
-    answered  = [a for a in session["answers"] if a is not None]
+    if body.question_idx < 0 or body.question_idx >= len(questions):
+        raise HTTPException(status_code=400, detail="Invalid question index.")
+
+    question = questions[body.question_idx]
+    result   = _check_answer(question, body.answer)
+
+    session["answers"][body.question_idx] = {
+        "given_answer": body.answer,
+        **result,
+    }
+
+    # Running score
+    score_so_far = sum(
+        r["marks_awarded"] for r in session["answers"].values()
+    )
+    max_so_far = sum(
+        float(questions[i].get("marks", 1))
+        for i in session["answers"]
+    )
 
     return {
-        "session_id":      session_id,
-        "candidate_name":  session["candidate_name"],
-        "exam_title":      session["exam"].get("title"),
-        "total_questions": len(questions),
-        "answered":        len(answered),
-        "finished":        session["finished"],
-        "answers":         session["answers"],   # list with None for unanswered
+        **result,
+        "progress": {
+            "answered":    len(session["answers"]),
+            "total":       len(questions),
+            "score_so_far": round(score_so_far, 2),
+            "max_so_far":   round(max_so_far, 2),
+        },
     }
 
 
 @router.post("/finish/{session_id}")
 async def finish_session(session_id: str):
     """
-    Close the session and return the full result report.
-    Call when the candidate submits the exam or time runs out.
-
-    Returns:
-    {
-      "score": int,
-      "total_marks": int,
-      "percentage": float,
-      "passed": bool,
-      "pass_mark": int,
-      "time_taken_seconds": int,
-      "questions_answered": int,
-      "questions_correct": int,
-      "topic_breakdown": [...],
-      "question_results": [...],    ← full per-question detail
-      "performance_summary": str
-    }
+    Finalise the session and return the full result payload.
+    Shape matches what ResultPage.jsx and SyllabusResultPage.jsx expect.
     """
-    session = _SESSIONS.get(session_id)
+    session = _sessions.pop(session_id, None)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired.")
+        raise HTTPException(status_code=404, detail="Session not found or already finished.")
 
-    session["finished"]    = True
-    session["finished_at"] = time.time()
+    questions      = session["questions"]
+    answers        = session["answers"]
+    candidate_name = session["candidate_name"]
+    exam           = session["exam"]
+    elapsed        = int(time.time() - session["started_at"])
 
-    questions  = session["questions"]
-    answers    = session["answers"]
-    exam       = session["exam"]
+    total_marks      = sum(float(q.get("marks", 1)) for q in questions)
+    obtained_marks   = sum(r["marks_awarded"] for r in answers.values())
+    pass_percentage  = float(exam.get("pass_percentage", 40))
+    percentage       = round((obtained_marks / total_marks * 100), 1) if total_marks else 0
+    passed           = percentage >= pass_percentage
+    pass_mark        = round(total_marks * pass_percentage / 100, 1)
 
-    total_marks    = exam.get("total_marks", len(questions))
-    pass_pct       = exam.get("pass_percentage", 40)
-    pass_mark      = round(total_marks * pass_pct / 100)
+    questions_correct  = sum(1 for r in answers.values() if r["is_correct"])
+    questions_answered = len(answers)
+    questions_skipped  = len(questions) - questions_answered
 
-    # Score unanswered questions as 0
-    score = sum(
-        (a["marks_awarded"] if a else 0)
-        for a in answers
-    )
-    correct_count = sum(1 for a in answers if a and a["is_correct"])
-    answered_count = sum(1 for a in answers if a is not None)
+    # Per-section breakdown
+    section_map: Dict[str, Dict[str, Any]] = {}
+    for idx, q in enumerate(questions):
+        sec = q.get("_section", "General")
+        if sec not in section_map:
+            section_map[sec] = {"correct": 0, "total": 0, "marks": 0, "max": 0}
+        section_map[sec]["total"] += 1
+        section_map[sec]["max"]   += float(q.get("marks", 1))
+        if idx in answers:
+            section_map[sec]["marks"]   += answers[idx]["marks_awarded"]
+            if answers[idx]["is_correct"]:
+                section_map[sec]["correct"] += 1
 
-    percentage  = round(score / total_marks * 100, 1) if total_marks else 0
-    passed      = score >= pass_mark
-    time_taken  = int(session["finished_at"] - session["started_at"])
-
-    # Per-question results (including unanswered)
-    question_results = []
-    for i, q in enumerate(questions):
-        a = answers[i]
-        question_results.append({
-            "question_idx":   i,
-            "section":        q.get("_section", "General"),
-            "question":       q["text"],
-            "question_type":  q["question_type"],
-            "difficulty":     q["difficulty"],
-            "marks_possible": q["marks"],
-            "given_answer":   a["given_answer"] if a else None,
-            "correct_answer": _correct_display(q),
-            "is_correct":     a["is_correct"] if a else False,
-            "marks_awarded":  a["marks_awarded"] if a else 0,
-            "explanation":    q.get("explanation", ""),
-            "skipped":        a is None,
-        })
-
-    topic_breakdown = _build_topic_breakdown(answers, questions)
-
-    # Simple performance summary
-    if percentage >= 80:
-        perf = "Excellent! Outstanding performance."
-    elif percentage >= 60:
-        perf = "Good performance. A few areas to review."
-    elif percentage >= pass_pct:
-        perf = "Passed. Focus on weak areas to improve further."
-    else:
-        perf = "Did not pass. Review the topics marked as weak areas."
+    topic_breakdown = [
+        {
+            "topic":         sec,
+            "correct":       v["correct"],
+            "questions_seen": v["total"],
+            "accuracy_pct":  round(v["correct"] / v["total"] * 100) if v["total"] else 0,
+        }
+        for sec, v in section_map.items()
+    ]
 
     weak_topics = [t["topic"] for t in topic_breakdown if t["accuracy_pct"] < 50]
 
-    return JSONResponse({
-        "score":               score,
-        "total_marks":         total_marks,
-        "percentage":          percentage,
-        "passed":              passed,
-        "pass_mark":           pass_mark,
-        "pass_percentage":     pass_pct,
-        "time_taken_seconds":  time_taken,
-        "questions_total":     len(questions),
-        "questions_answered":  answered_count,
-        "questions_correct":   correct_count,
-        "questions_skipped":   len(questions) - answered_count,
-        "topic_breakdown":     topic_breakdown,
-        "weak_topics":         weak_topics,
-        "question_results":    question_results,
-        "performance_summary": perf,
-        "candidate_name":      session["candidate_name"],
-        "exam_title":          exam.get("title"),
-    })
+    # Per-question review
+    question_results = []
+    for idx, q in enumerate(questions):
+        ans = answers.get(idx)
+        skipped = ans is None
+        question_results.append({
+            "question":      q.get("text", ""),
+            "section":       q.get("_section", ""),
+            "given_answer":  ans["given_answer"] if ans else "",
+            "correct_answer": ans["correct_answer"] if ans else q.get("correct_answer", ""),
+            "is_correct":    ans["is_correct"] if ans else False,
+            "skipped":       skipped,
+            "marks_awarded": ans["marks_awarded"] if ans else 0,
+            "marks_possible": float(q.get("marks", 1)),
+            "explanation":   ans["explanation"] if ans else q.get("explanation", ""),
+        })
+
+    performance_summary = (
+        f"You scored {percentage}% and {'passed' if passed else 'did not pass'} the exam. "
+        f"You answered {questions_answered} of {len(questions)} questions correctly on {questions_correct}."
+    )
+
+    return {
+        "score":              round(obtained_marks, 2),
+        "total_marks":        round(total_marks, 2),
+        "percentage":         round(percentage),
+        "passed":             passed,
+        "pass_mark":          pass_mark,
+        "pass_percentage":    pass_percentage,
+        "time_taken_seconds": elapsed,
+        "questions_total":    len(questions),
+        "questions_answered": questions_answered,
+        "questions_correct":  questions_correct,
+        "questions_skipped":  questions_skipped,
+        "topic_breakdown":    topic_breakdown,
+        "weak_topics":        weak_topics,
+        "question_results":   question_results,
+        "performance_summary": performance_summary,
+        "candidate_name":     candidate_name,
+        "exam_title":         exam.get("title", "Generated Exam"),
+    }

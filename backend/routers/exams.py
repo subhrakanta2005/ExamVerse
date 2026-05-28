@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, text
 from typing import List, Optional
 from datetime import datetime
-from sqlalchemy import text
 
 from database import get_db
 import models, schemas
@@ -52,17 +51,45 @@ async def update_exam(
     return get_exam_or_404(exam_id, db)
 
 
+# ── Admin: Delete exam (cascade-safe via raw SQL) ────────────────────────────
+# Single DELETE route — uses raw SQL to avoid FK violations from attempts/answers
+
 @router.delete("/{exam_id}")
 async def delete_exam(
     exam_id: int,
     db: Session = Depends(get_db),
     _: models.User = Depends(get_current_admin)
 ):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
+    exists = db.execute(text("SELECT id FROM exams WHERE id = :eid"), {"eid": exam_id}).first()
+    if not exists:
         raise HTTPException(status_code=404, detail="Exam not found")
-    db.delete(exam)
-    db.commit()
+
+    try:
+        db.execute(
+            text("DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id = :eid)"),
+            {"eid": exam_id}
+        )
+        db.execute(text("DELETE FROM results WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM attempts WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM exam_assignments WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(
+            text("DELETE FROM options WHERE question_id IN "
+                 "(SELECT id FROM questions WHERE section_id IN "
+                 "(SELECT id FROM sections WHERE exam_id = :eid))"),
+            {"eid": exam_id}
+        )
+        db.execute(
+            text("DELETE FROM questions WHERE section_id IN "
+                 "(SELECT id FROM sections WHERE exam_id = :eid)"),
+            {"eid": exam_id}
+        )
+        db.execute(text("DELETE FROM sections WHERE exam_id = :eid"), {"eid": exam_id})
+        db.execute(text("DELETE FROM exams WHERE id = :eid"), {"eid": exam_id})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
     return {"message": "Exam deleted"}
 
 
@@ -85,32 +112,23 @@ async def add_section(
     return section
 
 
-@router.delete("/{exam_id}")
-async def delete_exam(
+@router.delete("/{exam_id}/sections/{section_id}")
+async def delete_section(
     exam_id: int,
+    section_id: int,
     db: Session = Depends(get_db),
     _: models.User = Depends(get_current_admin)
 ):
-    # Verify exam exists
-    exists = db.execute(text("SELECT id FROM exams WHERE id = :eid"), {"eid": exam_id}).first()
-    if not exists:
-        raise HTTPException(status_code=404, detail="Exam not found")
-    
-    try:
-        db.execute(text("DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id = :eid)"), {"eid": exam_id})
-        db.execute(text("DELETE FROM results WHERE exam_id = :eid"), {"eid": exam_id})
-        db.execute(text("DELETE FROM attempts WHERE exam_id = :eid"), {"eid": exam_id})
-        db.execute(text("DELETE FROM exam_assignments WHERE exam_id = :eid"), {"eid": exam_id})
-        db.execute(text("DELETE FROM options WHERE question_id IN (SELECT id FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id = :eid))"), {"eid": exam_id})
-        db.execute(text("DELETE FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id = :eid)"), {"eid": exam_id})
-        db.execute(text("DELETE FROM sections WHERE exam_id = :eid"), {"eid": exam_id})
-        db.execute(text("DELETE FROM exams WHERE id = :eid"), {"eid": exam_id})
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    return {"message": "Exam deleted"}
+    section = db.query(models.Section).filter(
+        models.Section.id == section_id,
+        models.Section.exam_id == exam_id
+    ).first()
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    db.delete(section)
+    db.commit()
+    return {"message": "Section deleted"}
+
 
 # ── Assign exam to users ─────────────────────────────────────────────────────
 
@@ -124,7 +142,7 @@ async def assign_exam(
     exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    
+
     assigned = 0
     for user_id in user_ids:
         exists = db.query(models.ExamAssignment).filter(
@@ -167,14 +185,12 @@ async def get_available_exams(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    now = datetime.utcnow()
-    
     # Public exams
     public_q = db.query(models.Exam).filter(
         models.Exam.is_active == True,
         models.Exam.is_public == True
     )
-    
+
     # Assigned exams
     assigned_ids = db.query(models.ExamAssignment.exam_id).filter(
         models.ExamAssignment.user_id == current_user.id
@@ -183,7 +199,7 @@ async def get_available_exams(
         models.Exam.is_active == True,
         models.Exam.id.in_(assigned_ids)
     )
-    
+
     exams = public_q.union(assigned_q).all()
     result = []
     for exam in exams:
@@ -221,17 +237,3 @@ async def get_exam(
     _: models.User = Depends(get_current_admin)
 ):
     return get_exam_or_404(exam_id, db)
-
-@router.delete("/admin/nuke-broken-exams")
-async def nuke_exams(db: Session = Depends(get_db), _=Depends(get_current_admin)):
-    from sqlalchemy import text
-    db.execute(text("DELETE FROM answers WHERE attempt_id IN (SELECT id FROM attempts WHERE exam_id IN (3,5))"))
-    db.execute(text("DELETE FROM results WHERE exam_id IN (3,5)"))
-    db.execute(text("DELETE FROM attempts WHERE exam_id IN (3,5)"))
-    db.execute(text("DELETE FROM exam_assignments WHERE exam_id IN (3,5)"))
-    db.execute(text("DELETE FROM options WHERE question_id IN (SELECT id FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id IN (3,5)))"))
-    db.execute(text("DELETE FROM questions WHERE section_id IN (SELECT id FROM sections WHERE exam_id IN (3,5))"))
-    db.execute(text("DELETE FROM sections WHERE exam_id IN (3,5)"))
-    db.execute(text("DELETE FROM exams WHERE id IN (3,5)"))
-    db.commit()
-    return {"message": "Done"}
