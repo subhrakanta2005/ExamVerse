@@ -82,10 +82,10 @@ async def upload_syllabus_and_generate_exam(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read uploaded file: {e}")
 
-    if len(file_bytes) > 10 * 1024 * 1024:  # 10 MB guard
-        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10 MB.")
+    if len(file_bytes) > 20 * 1024 * 1024:  # 20 MB guard
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 20 MB.")
 
-    if len(file_bytes) < 10:
+    if len(file_bytes) < 20:
         raise HTTPException(status_code=400, detail="Uploaded file appears to be empty.")
 
     # ── Extract text ────────────────────────────────────────────────────────
