@@ -144,25 +144,32 @@ export default function SyllabusUpload() {
     setProgress(0);
     setErrorMsg("");
 
+    // Cap at 92 so the bar visually reaches near-done but never freezes at 88
     const ticker = setInterval(() => {
-      setProgress(p => p < 88 ? p + Math.random() * 7 : p);
-    }, 600);
+      setProgress(p => p < 92 ? p + Math.random() * 5 : p);
+    }, 800);
 
     try {
       let data;
 
       if (inputMode === "search") {
         // ── Search mode ──────────────────────────────────────────────────────
+        // Backend expects topics as list[str], not a raw string
+        const topicsArray = searchTopics
+          .split(/[\n,]+/)
+          .map(t => t.trim())
+          .filter(Boolean);
+
         const res = await api.post("/api/syllabus/search-and-generate", {
-          topics:         searchTopics,
+          topics:         topicsArray,
           num_questions:  config.num_questions,
           difficulty:     config.difficulty,
           question_types: config.question_types,
           time_limit:     config.time_limit,
-          exam_title:     config.exam_title || null,
+          exam_title:     config.exam_title  || null,
           focus_topics:   config.focus_topics || null,
           extra_context:  "",
-        }, { timeout: 120000 });
+        }, { timeout: 180000 });
         data = res.data;
 
       } else if (inputMode === "file" && file && (file.type === "application/pdf" || file.name.match(/\.pdf$/i))) {
@@ -180,7 +187,7 @@ export default function SyllabusUpload() {
         if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
         const res = await api.post("/api/syllabus/upload-and-generate", formData, {
           headers: { "Content-Type": "multipart/form-data" },
-          timeout: 120000,
+          timeout: 180000,
         });
         data = res.data;
 
@@ -201,7 +208,7 @@ export default function SyllabusUpload() {
         if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
         const res = await api.post("/api/syllabus/upload-and-generate", formData, {
           headers: { "Content-Type": "multipart/form-data" },
-          timeout: 120000,
+          timeout: 180000,
         });
         data = res.data;
       }
@@ -212,7 +219,19 @@ export default function SyllabusUpload() {
       setStep("done");
     } catch (err) {
       clearInterval(ticker);
-      setErrorMsg(err?.response?.data?.detail || "Generation failed. Please try again.");
+      setProgress(0);
+      // FastAPI validation errors arrive as err.response.data.detail (array or string)
+      const rawDetail = err?.response?.data?.detail;
+      let msg = "Generation failed. Please try again.";
+      if (typeof rawDetail === "string") {
+        msg = rawDetail;
+      } else if (Array.isArray(rawDetail)) {
+        // Pydantic validation error — e.g. topics must be a list
+        msg = rawDetail.map(e => e.msg || JSON.stringify(e)).join("; ");
+      } else if (err?.message) {
+        msg = err.message;
+      }
+      setErrorMsg(msg);
       setStep("error");
     }
   };
