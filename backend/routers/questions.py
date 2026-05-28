@@ -17,15 +17,22 @@ async def create_question(
     section = db.query(models.Section).filter(models.Section.id == payload.section_id).first()
     if not section:
         raise HTTPException(status_code=404, detail="Section not found")
-    
+
     q_data = payload.dict(exclude={"options"})
+
+    # FIX: QuestionCreate uses field name 'metadata' but the SQLAlchemy model
+    # column is named 'metadata_' (to avoid clash with Python's built-in).
+    # Rename the key before unpacking into the model.
+    if "metadata" in q_data:
+        q_data["metadata_"] = q_data.pop("metadata")
+
     question = models.Question(**q_data)
     db.add(question)
     db.flush()
 
     for opt in (payload.options or []):
         db.add(models.Option(question_id=question.id, **opt.dict()))
-    
+
     db.commit()
     db.refresh(question)
     return question
@@ -41,17 +48,21 @@ async def update_question(
     question = db.query(models.Question).filter(models.Question.id == question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
-    
+
     update_data = payload.dict(exclude_unset=True, exclude={"options"})
+
+    # FIX: same metadata → metadata_ remapping
+    if "metadata" in update_data:
+        update_data["metadata_"] = update_data.pop("metadata")
+
     for key, value in update_data.items():
         setattr(question, key, value)
-    
+
     if payload.options is not None:
-        # Delete old options and recreate
         db.query(models.Option).filter(models.Option.question_id == question_id).delete()
         for opt in payload.options:
             db.add(models.Option(question_id=question_id, **opt.dict()))
-    
+
     db.commit()
     db.refresh(question)
     return question

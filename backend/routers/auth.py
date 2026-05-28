@@ -14,14 +14,13 @@ from utils.auth import (
 router = APIRouter()
 
 RESET_TOKEN_EXPIRE_HOURS = 2
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://exam-verse-np738pawm-subhrakantbehera8699-3748s-projects.vercel.app")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 
 def send_reset_email_bg(email: str, token: str, frontend_url: str):
     """Background task for sending reset email (stub - integrate with SendGrid/SES)"""
     reset_url = f"{frontend_url}/reset-password?token={token}"
     print(f"[EMAIL] Password reset link for {email}: {reset_url}")
-    # TODO: Integrate with SendGrid, SES, or Resend
 
 
 @router.post("/signup", response_model=schemas.Token, status_code=201)
@@ -47,11 +46,13 @@ async def signup(payload: schemas.UserSignup, db: Session = Depends(get_db)):
         token = create_access_token({"sub": str(user.id), "role": user.role.value})
         return schemas.Token(
             access_token=token,
-            user=schemas.UserOut.from_orm(user)
+            # FIX: Pydantic v2 — use model_validate instead of from_orm
+            user=schemas.UserOut.model_validate(user)
         )
     except Exception as e:
         print("SIGNUP ERROR:", repr(e))
         raise
+
 
 @router.post("/login", response_model=schemas.Token)
 async def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
@@ -64,7 +65,8 @@ async def login(payload: schemas.UserLogin, db: Session = Depends(get_db)):
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     return schemas.Token(
         access_token=token,
-        user=schemas.UserOut.from_orm(user)
+        # FIX: Pydantic v2 — use model_validate instead of from_orm
+        user=schemas.UserOut.model_validate(user)
     )
 
 
@@ -80,14 +82,13 @@ async def forgot_password(
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(models.User.email == payload.email).first()
-    # Always return success to prevent email enumeration
     if user:
         token = secrets.token_urlsafe(32)
         user.reset_token = token
         user.reset_token_expiry = datetime.utcnow() + timedelta(hours=RESET_TOKEN_EXPIRE_HOURS)
         db.commit()
         background_tasks.add_task(send_reset_email_bg, user.email, token, FRONTEND_URL)
-    
+
     return {"message": "If that email is registered, you'll receive a password reset link shortly."}
 
 
@@ -97,7 +98,7 @@ async def reset_password(payload: schemas.ResetPassword, db: Session = Depends(g
         models.User.reset_token == payload.token,
         models.User.reset_token_expiry > datetime.utcnow()
     ).first()
-    
+
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
