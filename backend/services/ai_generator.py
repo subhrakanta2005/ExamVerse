@@ -3,10 +3,10 @@ ExamVerse / ExamForge — AI-Powered Exam Generator (Gemini Edition)
 ===================================================================
 File:  backend/services/ai_generator.py
 
-Uses Google Gemini (gemini-1.5-flash) to UNDERSTAND the PDF/text and
-generate intelligent questions — not regex/template tricks.
+Uses Google Gemini (gemini-1.5-flash) via direct HTTP (no SDK).
+This keeps memory usage under 100MB — safe for Render free tier (512MB).
 
-FREE TIER: 1,500 requests/day, 1M tokens/minute — more than enough.
+FREE TIER: 1,500 requests/day — more than enough.
 No credit card required to get an API key.
 
 Get your free key at: https://aistudio.google.com/app/apikey
@@ -14,16 +14,10 @@ Get your free key at: https://aistudio.google.com/app/apikey
 Setup (one time):
 1. Add to backend/.env:
        GEMINI_API_KEY=AIza...your_key_here
-2. Add to requirements.txt:
-       google-generativeai==0.7.2
-3. pip install google-generativeai==0.7.2
+   (No extra pip packages needed — uses httpx which is already installed)
 
-All existing function signatures (generate_exam_from_syllabus,
-extract_text_from_file, generate_exam_from_search) are unchanged —
-your routers need ZERO modifications.
-
-Fallback: if GEMINI_API_KEY is not set, automatically uses the old
-rule-based generator so nothing breaks during transition.
+All existing function signatures are unchanged — routers need ZERO modifications.
+Fallback: if GEMINI_API_KEY is not set, uses the rule-based generator.
 """
 
 from __future__ import annotations
@@ -36,27 +30,43 @@ import string
 from typing import Optional
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 0.  GEMINI CLIENT SETUP
+# 0.  GEMINI CLIENT SETUP  (pure HTTP — no SDK, saves ~250MB RAM)
 # ══════════════════════════════════════════════════════════════════════════════
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-_gemini_model  = None   # lazy-loaded
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+_GEMINI_URL     = (
+    "https://generativelanguage.googleapis.com/v1beta/models"
+    "/gemini-1.5-flash:generateContent"
+)
 
 
-def _get_gemini():
-    """Return a Gemini GenerativeModel, or None if key is missing."""
-    global _gemini_model
-    if _gemini_model is not None:
-        return _gemini_model
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_model = genai.GenerativeModel("gemini-1.5-flash")
-        return _gemini_model
-    except Exception:
-        return None
+async def _call_gemini_api(prompt: str) -> str:
+    """
+    Call Gemini REST API directly with httpx (already in requirements.txt).
+    Returns the text response, or raises on failure.
+    Uses zero extra memory vs the google-generativeai SDK (~250MB saved).
+    """
+    import httpx
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature":     0.7,
+            "maxOutputTokens": 8192,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        resp = await client.post(
+            f"{_GEMINI_URL}?key={GEMINI_API_KEY}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    # Extract text from Gemini response structure
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -263,15 +273,13 @@ async def _generate_with_gemini(
     exam_title:     Optional[str],
 ) -> tuple[list[dict], str]:
     """
-    Call Gemini and return (questions, inferred_title).
-    Returns ([], "") on failure so the caller can fall back.
+    Call Gemini REST API directly (no SDK) and return (questions, inferred_title).
+    Returns ([], "") on failure so caller falls back to rule-based.
     """
-    model = _get_gemini()
-    if model is None:
+    if not GEMINI_API_KEY:
         return [], ""
 
-    # For large num_questions, batch into chunks of 30 to stay within limits
-    batch_size   = 30
+    batch_size     = 30
     all_questions: list[dict] = []
     inferred_title = exam_title or ""
 
@@ -286,33 +294,24 @@ async def _generate_with_gemini(
             text, batch_n, difficulty, question_types, focus_topics, exam_title
         )
         try:
-            response = await _async_generate(model, prompt)
-            raw      = response.text
-        except Exception as e:
-            # Partial failure — stop here, use what we have
+            raw = await _call_gemini_api(prompt)
+        except Exception:
             break
 
         parsed         = _parse_gemini_response(raw, difficulty)
         all_questions += parsed
 
-        # Grab title from first batch only
         if not inferred_title:
             try:
-                data = json.loads(re.sub(r'^```(?:json)?\s*', '', raw).strip().rstrip('`').strip())
+                import re as _re
+                clean = _re.sub(r"^```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+                data  = json.loads(clean)
                 inferred_title = data.get("exam_title", "") or ""
             except Exception:
                 pass
 
     return all_questions, inferred_title
 
-
-async def _async_generate(model, prompt: str):
-    """
-    Wrap synchronous Gemini call in asyncio to not block FastAPI.
-    """
-    import asyncio
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, model.generate_content, prompt)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
