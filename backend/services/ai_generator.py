@@ -1,7 +1,7 @@
 """
 backend/services/ai_generator.py
 
-Generates exams using Google Gemini (gemini-1.5-flash, free tier).
+Generates exams using Google Gemini (free tier).
 Falls back to a smart rule-based generator when Gemini is unavailable.
 
 Env vars (set in Render → Environment):
@@ -31,10 +31,14 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash:generateContent"
-)
+# Models tried in order — stops at first success
+_GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+]
+_GEMINI_BASE    = "https://generativelanguage.googleapis.com/v1beta/models"
 _GEMINI_TIMEOUT = 90
 
 
@@ -54,7 +58,7 @@ async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
             reader = PdfReader(_io.BytesIO(file_bytes))
             return "\n".join(p.extract_text() or "" for p in reader.pages[:60])
         except Exception as e: logger.warning("pypdf: %s", e)
-    if ext in ("docx","doc") and _DOCX:
+    if ext in ("docx", "doc") and _DOCX:
         try:
             doc = _docx.Document(_io2.BytesIO(file_bytes))
             return "\n".join(p.text for p in doc.paragraphs)
@@ -63,7 +67,7 @@ async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Gemini API
+# Gemini API — tries multiple models, surfaces real errors
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _call_gemini(prompt: str, max_tokens: int = 8192) -> str:
@@ -73,17 +77,40 @@ async def _call_gemini(prompt: str, max_tokens: int = 8192) -> str:
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7},
     }
-    url = f"{_GEMINI_URL}?key={GEMINI_API_KEY}"
+    last_error = "No models attempted"
     async with httpx.AsyncClient(timeout=_GEMINI_TIMEOUT) as client:
-        resp = await client.post(url, json=payload,
-                                 headers={"Content-Type": "application/json"})
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:400]}")
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected Gemini response: {data}") from e
+        for model in _GEMINI_MODELS:
+            url = f"{_GEMINI_BASE}/{model}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                resp = await client.post(
+                    url, json=payload,
+                    headers={"Content-Type": "application/json"}
+                )
+                if resp.status_code == 404:
+                    last_error = f"model {model} not found (404)"
+                    logger.warning("Gemini: %s", last_error)
+                    continue
+                if resp.status_code != 200:
+                    last_error = f"HTTP {resp.status_code} from {model}: {resp.text[:300]}"
+                    logger.error("Gemini: %s", last_error)
+                    # 400 = bad key / quota — no point retrying other models
+                    if resp.status_code in (400, 401, 403):
+                        break
+                    continue
+                data = resp.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    logger.info("Gemini OK using model=%s", model)
+                    return text
+                except (KeyError, IndexError):
+                    last_error = f"Unexpected response from {model}: {str(data)[:200]}"
+                    logger.error("Gemini: %s", last_error)
+                    continue
+            except httpx.TimeoutException:
+                last_error = f"Timeout ({_GEMINI_TIMEOUT}s) on {model}"
+                logger.warning("Gemini: %s", last_error)
+                continue
+    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
 
 
 def _extract_json(text: str) -> Any:
@@ -195,22 +222,22 @@ def _normalise(raw: dict, num_questions: int, time_limit: int) -> dict:
             marks = float(q.get("marks") or 1)
             total_marks += marks
             clean_qs.append({
-                "text":          str(q.get("text","Question")).strip(),
-                "question_type": q.get("question_type","mcq_single"),
+                "text":          str(q.get("text", "Question")).strip(),
+                "question_type": q.get("question_type", "mcq_single"),
                 "marks":         marks,
-                "explanation":   str(q.get("explanation","") or ""),
+                "explanation":   str(q.get("explanation", "") or ""),
                 "options":       options,
             })
         clean_sections.append({
-            "title":       str(sec.get("title","Section") or "Section").strip(),
-            "description": str(sec.get("description","") or ""),
+            "title":       str(sec.get("title", "Section") or "Section").strip(),
+            "description": str(sec.get("description", "") or ""),
             "questions":   clean_qs,
         })
 
     all_qs = [q for s in clean_sections for q in s["questions"]]
     return {
-        "title":            str(raw.get("title","Generated Exam") or "Generated Exam").strip(),
-        "description":      str(raw.get("description","") or ""),
+        "title":            str(raw.get("title", "Generated Exam") or "Generated Exam").strip(),
+        "description":      str(raw.get("description", "") or ""),
         "duration_minutes": int(raw.get("duration_minutes", time_limit) or time_limit),
         "total_marks":      int(total_marks) or len(all_qs),
         "pass_percentage":  int(raw.get("pass_percentage", 40) or 40),
@@ -230,7 +257,6 @@ def _normalise(raw: dict, num_questions: int, time_limit: int) -> dict:
 # Smart rule-based fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Words that should NEVER be a correct answer in a generated question
 _STOPWORDS = {
     "the","a","an","and","or","but","in","on","at","to","for","of","with",
     "by","from","is","are","was","were","be","been","being","have","has",
@@ -242,54 +268,74 @@ _STOPWORDS = {
     "my","we","he","she","his","her","you","i","me","us","who","what","which",
     "when","where","how","why","figure","table","section","chapter","page",
     "given","shown","following","above","below","however","therefore","thus",
+    "life","lives","living","organism","organisms","period","time","span",
+    "example","examples","few","several","many","number","numbers",
 }
+
+# Single-word concepts that are too generic to be a meaningful answer
+_GENERIC_WORDS = {"life", "time", "period", "growth", "form", "type", "kind",
+                  "part", "role", "process", "stage", "state", "mode", "means"}
 
 
 def _clean_sentence(s: str) -> str:
     return re.sub(r'\s+', ' ', s).strip().rstrip('.!?,;:')
 
 
+def _is_good_answer(word: str) -> bool:
+    """Return True if word is a meaningful, specific answer (not a stopword or generic)."""
+    w = word.lower().strip()
+    if w in _STOPWORDS: return False
+    if w in _GENERIC_WORDS: return False
+    if len(w) < 3: return False
+    if not re.search(r'[a-zA-Z]', w): return False
+    return True
+
+
 def _extract_facts(content: str) -> list[dict]:
     """
-    Extract structured facts from text as (subject, verb, object) triples.
-    Returns list of dicts: {sentence, subject, predicate, answer_word}
-    Only returns facts where the answer word is meaningful (not a stopword).
+    Extract (sentence, subject, answer) triples where answer is a specific,
+    meaningful term — proper noun, numeric, or named concept.
     """
-    # Split into clean sentences
     raw_sents = re.split(r'(?<=[.!?])\s+|\n', content)
-    sents = [_clean_sentence(s) for s in raw_sents if len(s.strip()) > 30]
+    sents = [_clean_sentence(s) for s in raw_sents if len(s.strip()) > 25]
 
     facts = []
-    for sent in sents:
-        words = sent.split()
-        if len(words) < 5:
-            continue
+    seen_answers: set = set()
 
-        # Pattern 1: "X is/are/was Y" → answer is Y (last meaningful word)
+    for sent in sents:
+        # ── Pattern 1: "X is/are/was [the] Y" — named entity answer ──────────
         m = re.match(
-            r'^([A-Z][^.]{3,40}?)\s+(?:is|are|was|were|has been|have been)\s+(.{3,60})$',
+            r'^(.{5,60}?)\s+(?:is|are|was|were|has been|have been)\s+(?:the\s+)?(.{3,60})$',
             sent, re.IGNORECASE
         )
         if m:
             subject   = m.group(1).strip()
             predicate = m.group(2).strip()
-            # Find last meaningful noun/proper noun in predicate
-            pred_words = [w for w in re.findall(r'\b[A-Za-z]{3,}\b', predicate)
-                          if w.lower() not in _STOPWORDS]
-            if pred_words:
-                facts.append({
-                    "sentence":  sent,
-                    "subject":   subject,
-                    "predicate": predicate,
-                    "answer":    pred_words[-1],
-                    "style":     "is_predicate",
-                })
+            # Prefer the LAST proper noun or number in the predicate
+            candidates = re.findall(r'\b([A-Z][a-zA-Z]{2,}|[0-9]+(?:\.[0-9]+)?)\b', predicate)
+            candidates = [c for c in candidates if _is_good_answer(c)]
+            if not candidates:
+                # fall back to last meaningful word
+                candidates = [w for w in re.findall(r'\b[A-Za-z]{4,}\b', predicate)
+                              if _is_good_answer(w)]
+            if candidates:
+                answer = candidates[-1]
+                if answer.lower() not in seen_answers:
+                    seen_answers.add(answer.lower())
+                    facts.append({
+                        "sentence":  sent,
+                        "subject":   subject,
+                        "predicate": predicate,
+                        "answer":    answer,
+                        "style":     "is_predicate",
+                    })
                 continue
 
-        # Pattern 2: sentence contains a capitalised proper noun (≥2 words)
+        # ── Pattern 2: multi-word proper noun in sentence ────────────────────
         proper = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', sent)
         for phrase in proper:
-            if phrase.lower() not in _STOPWORDS and len(phrase) > 5:
+            if _is_good_answer(phrase.replace(" ", "")) and phrase.lower() not in seen_answers:
+                seen_answers.add(phrase.lower())
                 facts.append({
                     "sentence":  sent,
                     "subject":   phrase,
@@ -299,35 +345,54 @@ def _extract_facts(content: str) -> list[dict]:
                 })
                 break
 
+        # ── Pattern 3: sentence contains a number (years, counts, etc.) ──────
+        nums = re.findall(r'\b(\d+(?:\.\d+)?)\s*(years?|months?|days?|km|mg|cm|%|kg)?\b', sent)
+        for num, unit in nums:
+            answer = f"{num} {unit}".strip() if unit else num
+            if answer not in seen_answers and int(float(num)) > 0:
+                seen_answers.add(answer)
+                # Build a fill-in-the-blank
+                blank_sent = re.sub(re.escape(answer), "______", sent, count=1)
+                facts.append({
+                    "sentence":  sent,
+                    "subject":   blank_sent,
+                    "predicate": f"approximately {answer}",
+                    "answer":    answer,
+                    "style":     "numeric",
+                })
+                break
+
     return facts
 
 
 def _get_distractors(correct: str, content: str, n: int = 3) -> list[str]:
-    """
-    Pick n plausible distractors — same rough length, not stopwords,
-    not the correct answer.
-    """
-    # Same-type words: prefer words of similar length
-    pool = [w for w in re.findall(r'\b[A-Za-z]{3,}\b', content)
-            if w.lower() not in _STOPWORDS and w.lower() != correct.lower()
-            and abs(len(w) - len(correct)) <= 5]
-    # Deduplicate preserving order
-    seen = set(); deduped = []
+    """Pick n plausible distractors — not stopwords, not the correct answer."""
+    # Prefer words of similar length and type
+    pool = []
+    # Proper nouns first
+    pool += re.findall(r'\b[A-Z][a-z]{2,}\b', content)
+    # Then longer words
+    pool += re.findall(r'\b[A-Za-z]{4,}\b', content)
+
+    filtered = []
+    seen = set()
     for w in pool:
-        if w.lower() not in seen:
-            seen.add(w.lower()); deduped.append(w)
+        wl = w.lower()
+        if wl not in seen and _is_good_answer(w) and w.lower() != correct.lower():
+            seen.add(wl)
+            filtered.append(w)
 
-    random.shuffle(deduped)
-    result = deduped[:n]
+    random.shuffle(filtered)
+    result = filtered[:n]
 
-    # Pad with generic distractors if pool is too small
+    # Pad with generic plausible distractors if pool is thin
     generics = ["None of the above", "All of the above", "Cannot be determined",
-                "Not mentioned in text", "Both A and B", "Data insufficient"]
+                "Data insufficient", "Not mentioned in the text"]
     i = 0
     while len(result) < n:
         result.append(generics[i % len(generics)]); i += 1
 
-    return result
+    return result[:n]
 
 
 def _fallback_generate(
@@ -335,23 +400,20 @@ def _fallback_generate(
     time_limit: int, exam_title: Optional[str],
 ) -> dict:
     """
-    Smart rule-based generator.  Extracts real facts from the text and
-    builds MCQ/T-F/Short-Answer questions from them.
-    Never produces nonsense like 'What is The?' or 'What is Each?'
+    Rule-based generator. Only runs when Gemini is unavailable.
+    Produces meaningful MCQ/T-F/SA questions from real facts in the text.
     """
-    facts = _extract_facts(content)
-    # Clean sentences for True/False
+    facts    = _extract_facts(content)
     all_sents = [_clean_sentence(s) for s in re.split(r'(?<=[.!?])\s+|\n', content)
                  if len(s.strip()) > 40]
 
-    # Determine type sequence
     if question_types == "mcq":
         seq = ["mcq_single"] * num_questions
     elif question_types == "true_false":
         seq = ["true_false"] * num_questions
     elif question_types == "short":
         seq = ["short_answer"] * num_questions
-    else:  # mixed
+    else:
         n_mcq = max(1, round(num_questions * 0.60))
         n_tf  = max(1, round(num_questions * 0.20))
         n_sa  = num_questions - n_mcq - n_tf
@@ -363,33 +425,27 @@ def _fallback_generate(
     questions  = []
     fact_idx   = 0
     sent_idx   = 0
-    used_sents = set()
+    used_sents: set = set()
 
     for q_type in seq[:num_questions]:
 
         # ── MCQ ───────────────────────────────────────────────────────────────
         if q_type == "mcq_single":
             fact = None
-            # Try to find an unused fact
-            for fi in range(fact_idx, min(fact_idx + 20, len(facts))):
-                if fi < len(facts) and facts[fi]["sentence"] not in used_sents:
+            for fi in range(fact_idx, min(fact_idx + 30, len(facts))):
+                if facts[fi]["sentence"] not in used_sents:
                     fact = facts[fi]; fact_idx = fi + 1
                     used_sents.add(fact["sentence"]); break
 
             if fact:
                 answer = fact["answer"]
                 if fact["style"] == "proper_blank":
-                    q_text = (f"Fill in the blank: "
-                              f"{fact['predicate'].replace(answer,'______',1)}?")
+                    q_text = f"Fill in the blank: {fact['predicate']}?"
+                elif fact["style"] == "numeric":
+                    q_text = f"Fill in the blank: {fact['subject']}?"
                 else:
-                    q_text = (f"According to the content, "
-                              f"{fact['subject']} _______ {fact['predicate'].split()[-1]}. "
-                              f"What is the missing part?")
-                    # Simpler: just ask directly
-                    q_text = f"What is '{fact['subject']}' in the context of this content?"
-                    if fact["style"] == "is_predicate":
-                        q_text = (f"What describes '{fact['subject']}' "
-                                  f"according to the text?")
+                    q_text = (f"According to the content, what is the "
+                              f"{fact['subject'].lower().strip('.')}?")
 
                 distractors = _get_distractors(answer, content, 3)
                 opts = [answer] + distractors
@@ -398,29 +454,28 @@ def _fallback_generate(
                     "text":          q_text,
                     "question_type": "mcq_single",
                     "marks":         1,
-                    "explanation":   f"Based on the text: '{fact['sentence']}'.",
+                    "explanation":   f"From the text: \"{fact['sentence']}\"",
                     "options":       [{"text": o, "is_correct": (o == answer)} for o in opts],
                 })
             else:
-                # Absolute fallback — generic comprehension MCQ from a sentence
+                # Generic comprehension MCQ
                 sent = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
                 sent_idx += 1
                 questions.append({
-                    "text":          f"Which statement correctly reflects the content: \"{sent[:80]}...\"?",
+                    "text":    f"Which statement correctly reflects the content?",
                     "question_type": "mcq_single",
-                    "marks":         1,
-                    "explanation":   "This statement is directly supported by the syllabus.",
+                    "marks":   1,
+                    "explanation": f"This is directly stated in the text: \"{sent[:100]}\"",
                     "options": [
-                        {"text": "The statement is accurate as written.",    "is_correct": True},
-                        {"text": "The statement is the opposite of the text.","is_correct": False},
-                        {"text": "The statement is partially correct only.", "is_correct": False},
-                        {"text": "The statement is not mentioned at all.",   "is_correct": False},
+                        {"text": sent[:80] + ("..." if len(sent) > 80 else ""), "is_correct": True},
+                        {"text": "The opposite of what is stated in the text.",   "is_correct": False},
+                        {"text": "This concept is not mentioned in the content.", "is_correct": False},
+                        {"text": "Only partially correct based on the content.",  "is_correct": False},
                     ],
                 })
 
         # ── True / False ──────────────────────────────────────────────────────
         elif q_type == "true_false":
-            # Pick an unused sentence
             sent = None
             for si in range(sent_idx, sent_idx + len(all_sents) + 1):
                 candidate = all_sents[si % len(all_sents)] if all_sents else ""
@@ -430,7 +485,6 @@ def _fallback_generate(
             if not sent:
                 sent = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
                 sent_idx += 1
-
             questions.append({
                 "text":          f"True or False: {sent}.",
                 "question_type": "true_false",
@@ -444,21 +498,20 @@ def _fallback_generate(
 
         # ── Short Answer ──────────────────────────────────────────────────────
         else:
-            # Find a fact with a meaningful subject
             fact = None
-            for fi in range(fact_idx, min(fact_idx + 20, len(facts))):
-                if fi < len(facts) and facts[fi]["sentence"] not in used_sents:
+            for fi in range(fact_idx, min(fact_idx + 30, len(facts))):
+                if facts[fi]["sentence"] not in used_sents:
                     fact = facts[fi]; fact_idx = fi + 1
                     used_sents.add(fact["sentence"]); break
 
             if fact:
-                q_text  = f"Explain: {fact['subject']} — as described in the content."
+                q_text  = f"Explain: {fact['subject'].strip('.')} — as described in the content."
                 explain = fact["sentence"]
             else:
-                sent    = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
+                sent     = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
                 sent_idx += 1
-                q_text  = f"In your own words, explain the following concept from the content: \"{sent[:100]}\"."
-                explain = sent
+                q_text   = f"In your own words, explain: \"{sent[:100]}\"."
+                explain  = sent
 
             questions.append({
                 "text":          q_text,
@@ -468,7 +521,6 @@ def _fallback_generate(
                 "options":       [],
             })
 
-    # Pad if we somehow ran out of material
     while len(questions) < num_questions:
         questions.append({
             "text":          f"Summarise a key concept from the content (question {len(questions)+1}).",
@@ -513,7 +565,7 @@ async def generate_exam_from_syllabus(
     focus_topics:   Optional[str] = None,
 ) -> dict:
     if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set — using smart fallback generator")
+        logger.warning("GEMINI_API_KEY not set — using fallback generator")
         return _fallback_generate(syllabus_text, num_questions, difficulty,
                                   question_types, time_limit, exam_title)
     prompt = _build_prompt(syllabus_text, num_questions, difficulty, question_types,
@@ -522,10 +574,11 @@ async def generate_exam_from_syllabus(
         raw_text = await _call_gemini(prompt, max_tokens=8192)
         raw_json = _extract_json(raw_text)
         result   = _normalise(raw_json, num_questions, time_limit)
-        logger.info("Gemini OK: %d questions", sum(len(s["questions"]) for s in result["sections"]))
+        logger.info("Gemini OK: %d questions generated",
+                    sum(len(s["questions"]) for s in result["sections"]))
         return result
     except Exception as exc:
-        logger.error("Gemini failed (%s) — using fallback", exc)
+        logger.error("Gemini failed (%s) — falling back to rule-based generator", exc)
         return _fallback_generate(syllabus_text, num_questions, difficulty,
                                   question_types, time_limit, exam_title)
 
@@ -556,7 +609,7 @@ async def generate_exam_from_search(
                     f"{r.get('title','')}\n{r.get('content','')}" for r in results
                 )
         except Exception as exc:
-            logger.warning("Tavily: %s", exc)
+            logger.warning("Tavily search failed: %s", exc)
 
     if not combined:
         combined = (f"Topics: {', '.join(topics)}\nContext: {extra_context}\n\n"
