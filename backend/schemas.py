@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, validator, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Any, Dict
 from datetime import datetime
 from models import UserRole, QuestionType, AttemptStatus, ResultStatus
@@ -40,8 +40,7 @@ class UserOut(BaseModel):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -64,8 +63,7 @@ class OptionOut(BaseModel):
     order: int
     media_url: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class OptionOutCandidate(BaseModel):
     id: int
@@ -73,8 +71,7 @@ class OptionOutCandidate(BaseModel):
     order: int
     media_url: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ── Question Schemas ──────────────────────────────────────────────────────────
@@ -114,14 +111,14 @@ class QuestionOut(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     options: List[OptionOut] = []
 
-    @validator('metadata', pre=True, always=True)
-    def coerce_metadata(cls, v):
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def coerce_metadata(cls, v: Any) -> Optional[Dict[str, Any]]:
         if isinstance(v, dict):
             return v
         return None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class QuestionOutCandidate(BaseModel):
     id: int
@@ -134,14 +131,14 @@ class QuestionOutCandidate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     options: List[OptionOutCandidate] = []
 
-    @validator('metadata', pre=True, always=True)
-    def coerce_metadata(cls, v):
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def coerce_metadata(cls, v: Any) -> Optional[Dict[str, Any]]:
         if isinstance(v, dict):
             return v
         return None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ── Section Schemas ───────────────────────────────────────────────────────────
@@ -163,8 +160,7 @@ class SectionOut(BaseModel):
     time_limit_minutes: Optional[int] = None
     questions: List[QuestionOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class SectionOutCandidate(BaseModel):
     id: int
@@ -173,8 +169,7 @@ class SectionOutCandidate(BaseModel):
     order: int
     questions: List[QuestionOutCandidate] = []
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ── Exam Schemas ──────────────────────────────────────────────────────────────
@@ -192,6 +187,8 @@ class ExamCreate(BaseModel):
     shuffle_options: bool = False
     max_attempts: int = Field(1, ge=1)
     is_public: bool = False
+    # is_active lets ExamEditor publish the exam on creation/update
+    is_active: bool = False
     show_result_immediately: bool = True
     allow_review: bool = True
     start_time: Optional[datetime] = None
@@ -238,8 +235,7 @@ class ExamOut(BaseModel):
     created_at: datetime
     sections: List[SectionOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class ExamListOut(BaseModel):
     id: int
@@ -256,8 +252,7 @@ class ExamListOut(BaseModel):
     created_at: datetime
     question_count: Optional[int] = 0
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ── Attempt Schemas ───────────────────────────────────────────────────────────
@@ -285,15 +280,13 @@ class AttemptOut(BaseModel):
     tab_switch_count: int
     question_order: Optional[List[int]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class AttemptDetail(AttemptOut):
     exam: ExamOut
     answers: List["AnswerOut"] = []
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class AnswerOut(BaseModel):
     id: int
@@ -307,8 +300,7 @@ class AnswerOut(BaseModel):
     is_correct: Optional[bool] = None
     marks_obtained: Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 # ── Result Schemas ────────────────────────────────────────────────────────────
@@ -330,8 +322,7 @@ class ResultOut(BaseModel):
     published_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 class EvaluateAnswer(BaseModel):
     answer_id: int
