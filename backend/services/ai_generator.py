@@ -1,15 +1,16 @@
 """
 backend/services/ai_generator.py
 
-Generates exams using Google Gemini (free tier).
-Falls back to a smart rule-based generator when Gemini is unavailable.
+Rules:
+  1. If uploaded file looks like a question bank  → parse it directly, NO AI at all
+  2. If it's a syllabus/notes                     → use Gemini to generate questions
+  3. If Gemini fails / key missing                → use smart rule-based fallback
 
-Env vars (set in Render → Environment):
+Env vars (Render dashboard):
   GEMINI_API_KEY   — https://aistudio.google.com/apikey  (free, 1500 req/day)
-  TAVILY_API_KEY   — optional, for web-search mode
+  TAVILY_API_KEY   — optional, for search mode
 """
 from __future__ import annotations
-
 import asyncio, json, logging, os, random, re, textwrap
 from typing import Any, Optional
 import httpx
@@ -31,13 +32,7 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
-# Models tried in order — stops at first success
-_GEMINI_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-pro",
-]
+_GEMINI_MODELS  = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 _GEMINI_BASE    = "https://generativelanguage.googleapis.com/v1beta/models"
 _GEMINI_TIMEOUT = 90
 
@@ -48,625 +43,132 @@ _GEMINI_TIMEOUT = 90
 
 async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else "txt"
-    if ext == "txt":
-        for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
-            try: return file_bytes.decode(enc)
-            except UnicodeDecodeError: pass
-        return file_bytes.decode("utf-8", errors="replace")
     if ext == "pdf" and _PYPDF:
         try:
             reader = PdfReader(_io.BytesIO(file_bytes))
-            return "\n".join(p.extract_text() or "" for p in reader.pages[:60])
-        except Exception as e: logger.warning("pypdf: %s", e)
+            return "\n".join(p.extract_text() or "" for p in reader.pages[:80])
+        except Exception as e:
+            logger.warning("pypdf error: %s", e)
     if ext in ("docx", "doc") and _DOCX:
         try:
             doc = _docx.Document(_io2.BytesIO(file_bytes))
             return "\n".join(p.text for p in doc.paragraphs)
-        except Exception as e: logger.warning("docx: %s", e)
+        except Exception as e:
+            logger.warning("docx error: %s", e)
+    for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+        try:
+            return file_bytes.decode(enc)
+        except UnicodeDecodeError:
+            pass
     return file_bytes.decode("utf-8", errors="replace")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Gemini API — tries multiple models, surfaces real errors
-# ══════════════════════════════════════════════════════════════════════════════
-
-async def _call_gemini(prompt: str, max_tokens: int = 8192) -> str:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not set.")
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7},
-    }
-    last_error = "No models attempted"
-    async with httpx.AsyncClient(timeout=_GEMINI_TIMEOUT) as client:
-        for model in _GEMINI_MODELS:
-            url = f"{_GEMINI_BASE}/{model}:generateContent?key={GEMINI_API_KEY}"
-            try:
-                resp = await client.post(
-                    url, json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                if resp.status_code == 404:
-                    last_error = f"model {model} not found (404)"
-                    logger.warning("Gemini: %s", last_error)
-                    continue
-                if resp.status_code != 200:
-                    last_error = f"HTTP {resp.status_code} from {model}: {resp.text[:300]}"
-                    logger.error("Gemini: %s", last_error)
-                    # 400 = bad key / quota — no point retrying other models
-                    if resp.status_code in (400, 401, 403):
-                        break
-                    continue
-                data = resp.json()
-                try:
-                    text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    logger.info("Gemini OK using model=%s", model)
-                    return text
-                except (KeyError, IndexError):
-                    last_error = f"Unexpected response from {model}: {str(data)[:200]}"
-                    logger.error("Gemini: %s", last_error)
-                    continue
-            except httpx.TimeoutException:
-                last_error = f"Timeout ({_GEMINI_TIMEOUT}s) on {model}"
-                logger.warning("Gemini: %s", last_error)
-                continue
-    raise RuntimeError(f"All Gemini models failed. Last error: {last_error}")
-
-
-def _extract_json(text: str) -> Any:
-    text = re.sub(r"```(?:json)?\s*", "", text)
-    text = re.sub(r"```", "", text).strip()
-    try: return json.loads(text)
-    except json.JSONDecodeError: pass
-    for pat in (r'\{[\s\S]*\}', r'\[[\s\S]*\]'):
-        m = re.search(pat, text)
-        if m:
-            try: return json.loads(m.group())
-            except json.JSONDecodeError: pass
-    raise ValueError(f"No JSON in LLM output: {text[:300]}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Prompt
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _build_prompt(content, num_questions, difficulty, question_types,
-                  time_limit, exam_title, focus_topics) -> str:
-    title_hint = f'Use "{exam_title}" as the exam title.' if exam_title \
-                 else "Infer a suitable exam title from the content."
-    focus_hint = f"Focus especially on: {focus_topics}." if focus_topics else ""
-
-    type_map = {
-        "mcq":        f"ALL {num_questions} questions must be MCQ (4 options, exactly 1 correct).",
-        "true_false": f"ALL {num_questions} questions must be True/False (2 options: True and False).",
-        "short":      f"ALL {num_questions} questions must be short_answer (empty options array, model answer in explanation).",
-        "mixed":      f"Mix: ~60% mcq_single, ~20% true_false, ~20% short_answer across {num_questions} questions.",
-    }
-    return textwrap.dedent(f"""
-You are an expert exam setter. Generate exactly {num_questions} questions from the content below.
-
-RULES:
-1. Difficulty: {difficulty}
-2. {type_map.get(question_types, type_map['mixed'])}
-3. {title_hint}
-4. {focus_hint}
-5. Every question MUST have a non-empty explanation (why the answer is correct).
-6. MCQ: exactly 4 meaningful options, mark exactly 1 with "is_correct": true.
-7. True/False: options must be [{{"text":"True","is_correct":true/false}},{{"text":"False","is_correct":false/true}}].
-8. short_answer: options array must be [].
-9. question_type values: "mcq_single", "true_false", "short_answer".
-10. Return ONLY valid JSON — no markdown, no text outside the JSON object.
-
-JSON FORMAT:
-{{
-  "title": "...",
-  "description": "...",
-  "duration_minutes": {time_limit},
-  "total_marks": {num_questions},
-  "pass_percentage": 40,
-  "negative_marking": false,
-  "sections": [{{
-    "title": "Section 1",
-    "description": "",
-    "questions": [
-      {{
-        "text": "What is the powerhouse of the cell?",
-        "question_type": "mcq_single",
-        "marks": 1,
-        "explanation": "The mitochondria produces ATP energy for the cell.",
-        "options": [
-          {{"text": "Nucleus",      "is_correct": false}},
-          {{"text": "Mitochondria", "is_correct": true}},
-          {{"text": "Ribosome",     "is_correct": false}},
-          {{"text": "Lysosome",     "is_correct": false}}
-        ]
-      }}
-    ]
-  }}]
-}}
-
-CONTENT:
----
-{content[:7000]}
----
-
-Return ONLY the JSON object. No markdown. No explanation outside JSON.
-""").strip()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Normaliser
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _normalise(raw: dict, num_questions: int, time_limit: int) -> dict:
-    sections = raw.get("sections") or []
-    if not sections and raw.get("questions"):
-        sections = [{"title": "General", "description": "", "questions": raw["questions"]}]
-
-    clean_sections = []
-    total_marks = 0
-    for sec in sections:
-        clean_qs = []
-        for q in (sec.get("questions") or []):
-            raw_opts = q.get("options") or []
-            correct_hint = (q.get("correct_answer") or "").strip().lower()
-            options = []
-            for opt in raw_opts:
-                t = str(opt.get("text", "")).strip()
-                ic = bool(opt.get("is_correct", False))
-                if not ic and correct_hint:
-                    ic = t.lower() == correct_hint or t.lower().startswith(correct_hint)
-                options.append({"text": t, "is_correct": ic})
-            if options and not any(o["is_correct"] for o in options):
-                options[0]["is_correct"] = True
-            marks = float(q.get("marks") or 1)
-            total_marks += marks
-            clean_qs.append({
-                "text":          str(q.get("text", "Question")).strip(),
-                "question_type": q.get("question_type", "mcq_single"),
-                "marks":         marks,
-                "explanation":   str(q.get("explanation", "") or ""),
-                "options":       options,
-            })
-        clean_sections.append({
-            "title":       str(sec.get("title", "Section") or "Section").strip(),
-            "description": str(sec.get("description", "") or ""),
-            "questions":   clean_qs,
-        })
-
-    all_qs = [q for s in clean_sections for q in s["questions"]]
-    return {
-        "title":            str(raw.get("title", "Generated Exam") or "Generated Exam").strip(),
-        "description":      str(raw.get("description", "") or ""),
-        "duration_minutes": int(raw.get("duration_minutes", time_limit) or time_limit),
-        "total_marks":      int(total_marks) or len(all_qs),
-        "pass_percentage":  int(raw.get("pass_percentage", 40) or 40),
-        "negative_marking": bool(raw.get("negative_marking", False)),
-        "sections":         clean_sections,
-        "coverage_report": {
-            "total_topics_in_syllabus": 1, "topics_covered": 1,
-            "topics_missing": 0, "coverage_percentage": 100,
-            "total_questions": len(all_qs),
-            "question_distribution": {"by_type": {}, "by_difficulty": {}},
-            "weak_areas": [], "source": "gemini",
-        },
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Smart rule-based fallback
-# ══════════════════════════════════════════════════════════════════════════════
-
-_STOPWORDS = {
-    "the","a","an","and","or","but","in","on","at","to","for","of","with",
-    "by","from","is","are","was","were","be","been","being","have","has",
-    "had","do","does","did","will","would","could","should","may","might",
-    "shall","can","its","it","this","that","these","those","their","they",
-    "them","there","here","each","every","some","any","all","both","few",
-    "more","most","other","such","no","not","only","own","same","so","than",
-    "too","very","just","also","well","even","still","back","way","our","your",
-    "my","we","he","she","his","her","you","i","me","us","who","what","which",
-    "when","where","how","why","figure","table","section","chapter","page",
-    "given","shown","following","above","below","however","therefore","thus",
-    "life","lives","living","organism","organisms","period","time","span",
-    "example","examples","few","several","many","number","numbers",
-}
-
-# Single-word concepts that are too generic to be a meaningful answer
-_GENERIC_WORDS = {"life", "time", "period", "growth", "form", "type", "kind",
-                  "part", "role", "process", "stage", "state", "mode", "means"}
-
-
-def _clean_sentence(s: str) -> str:
-    return re.sub(r'\s+', ' ', s).strip().rstrip('.!?,;:')
-
-
-def _is_good_answer(word: str) -> bool:
-    """Return True if word is a meaningful, specific answer (not a stopword or generic)."""
-    w = word.lower().strip()
-    if w in _STOPWORDS: return False
-    if w in _GENERIC_WORDS: return False
-    if len(w) < 3: return False
-    if not re.search(r'[a-zA-Z]', w): return False
-    return True
-
-
-def _extract_facts(content: str) -> list[dict]:
-    """
-    Extract (sentence, subject, answer) triples where answer is a specific,
-    meaningful term — proper noun, numeric, or named concept.
-    """
-    raw_sents = re.split(r'(?<=[.!?])\s+|\n', content)
-    sents = [_clean_sentence(s) for s in raw_sents if len(s.strip()) > 25]
-
-    facts = []
-    seen_answers: set = set()
-
-    for sent in sents:
-        # ── Pattern 1: "X is/are/was [the] Y" — named entity answer ──────────
-        m = re.match(
-            r'^(.{5,60}?)\s+(?:is|are|was|were|has been|have been)\s+(?:the\s+)?(.{3,60})$',
-            sent, re.IGNORECASE
-        )
-        if m:
-            subject   = m.group(1).strip()
-            predicate = m.group(2).strip()
-            # Prefer the LAST proper noun or number in the predicate
-            candidates = re.findall(r'\b([A-Z][a-zA-Z]{2,}|[0-9]+(?:\.[0-9]+)?)\b', predicate)
-            candidates = [c for c in candidates if _is_good_answer(c)]
-            if not candidates:
-                # fall back to last meaningful word
-                candidates = [w for w in re.findall(r'\b[A-Za-z]{4,}\b', predicate)
-                              if _is_good_answer(w)]
-            if candidates:
-                answer = candidates[-1]
-                if answer.lower() not in seen_answers:
-                    seen_answers.add(answer.lower())
-                    facts.append({
-                        "sentence":  sent,
-                        "subject":   subject,
-                        "predicate": predicate,
-                        "answer":    answer,
-                        "style":     "is_predicate",
-                    })
-                continue
-
-        # ── Pattern 2: multi-word proper noun in sentence ────────────────────
-        proper = re.findall(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})+)\b', sent)
-        for phrase in proper:
-            if _is_good_answer(phrase.replace(" ", "")) and phrase.lower() not in seen_answers:
-                seen_answers.add(phrase.lower())
-                facts.append({
-                    "sentence":  sent,
-                    "subject":   phrase,
-                    "predicate": sent.replace(phrase, "______", 1),
-                    "answer":    phrase,
-                    "style":     "proper_blank",
-                })
-                break
-
-        # ── Pattern 3: sentence contains a number (years, counts, etc.) ──────
-        nums = re.findall(r'\b(\d+(?:\.\d+)?)\s*(years?|months?|days?|km|mg|cm|%|kg)?\b', sent)
-        for num, unit in nums:
-            answer = f"{num} {unit}".strip() if unit else num
-            if answer not in seen_answers and int(float(num)) > 0:
-                seen_answers.add(answer)
-                # Build a fill-in-the-blank
-                blank_sent = re.sub(re.escape(answer), "______", sent, count=1)
-                facts.append({
-                    "sentence":  sent,
-                    "subject":   blank_sent,
-                    "predicate": f"approximately {answer}",
-                    "answer":    answer,
-                    "style":     "numeric",
-                })
-                break
-
-    return facts
-
-
-def _get_distractors(correct: str, content: str, n: int = 3) -> list[str]:
-    """Pick n plausible distractors — not stopwords, not the correct answer."""
-    # Prefer words of similar length and type
-    pool = []
-    # Proper nouns first
-    pool += re.findall(r'\b[A-Z][a-z]{2,}\b', content)
-    # Then longer words
-    pool += re.findall(r'\b[A-Za-z]{4,}\b', content)
-
-    filtered = []
-    seen = set()
-    for w in pool:
-        wl = w.lower()
-        if wl not in seen and _is_good_answer(w) and w.lower() != correct.lower():
-            seen.add(wl)
-            filtered.append(w)
-
-    random.shuffle(filtered)
-    result = filtered[:n]
-
-    # Pad with generic plausible distractors if pool is thin
-    generics = ["None of the above", "All of the above", "Cannot be determined",
-                "Data insufficient", "Not mentioned in the text"]
-    i = 0
-    while len(result) < n:
-        result.append(generics[i % len(generics)]); i += 1
-
-    return result[:n]
-
-
-def _fallback_generate(
-    content: str, num_questions: int, difficulty: str, question_types: str,
-    time_limit: int, exam_title: Optional[str],
-) -> dict:
-    """
-    Rule-based generator. Only runs when Gemini is unavailable.
-    Produces meaningful MCQ/T-F/SA questions from real facts in the text.
-    """
-    facts    = _extract_facts(content)
-    all_sents = [_clean_sentence(s) for s in re.split(r'(?<=[.!?])\s+|\n', content)
-                 if len(s.strip()) > 40]
-
-    if question_types == "mcq":
-        seq = ["mcq_single"] * num_questions
-    elif question_types == "true_false":
-        seq = ["true_false"] * num_questions
-    elif question_types == "short":
-        seq = ["short_answer"] * num_questions
-    else:
-        n_mcq = max(1, round(num_questions * 0.60))
-        n_tf  = max(1, round(num_questions * 0.20))
-        n_sa  = num_questions - n_mcq - n_tf
-        seq   = (["mcq_single"] * n_mcq +
-                 ["true_false"] * max(0, n_tf) +
-                 ["short_answer"] * max(0, n_sa))
-        random.shuffle(seq)
-
-    questions  = []
-    fact_idx   = 0
-    sent_idx   = 0
-    used_sents: set = set()
-
-    for q_type in seq[:num_questions]:
-
-        # ── MCQ ───────────────────────────────────────────────────────────────
-        if q_type == "mcq_single":
-            fact = None
-            for fi in range(fact_idx, min(fact_idx + 30, len(facts))):
-                if facts[fi]["sentence"] not in used_sents:
-                    fact = facts[fi]; fact_idx = fi + 1
-                    used_sents.add(fact["sentence"]); break
-
-            if fact:
-                answer = fact["answer"]
-                if fact["style"] == "proper_blank":
-                    q_text = f"Fill in the blank: {fact['predicate']}?"
-                elif fact["style"] == "numeric":
-                    q_text = f"Fill in the blank: {fact['subject']}?"
-                else:
-                    q_text = (f"According to the content, what is the "
-                              f"{fact['subject'].lower().strip('.')}?")
-
-                distractors = _get_distractors(answer, content, 3)
-                opts = [answer] + distractors
-                random.shuffle(opts)
-                questions.append({
-                    "text":          q_text,
-                    "question_type": "mcq_single",
-                    "marks":         1,
-                    "explanation":   f"From the text: \"{fact['sentence']}\"",
-                    "options":       [{"text": o, "is_correct": (o == answer)} for o in opts],
-                })
-            else:
-                # Generic comprehension MCQ
-                sent = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
-                sent_idx += 1
-                questions.append({
-                    "text":    f"Which statement correctly reflects the content?",
-                    "question_type": "mcq_single",
-                    "marks":   1,
-                    "explanation": f"This is directly stated in the text: \"{sent[:100]}\"",
-                    "options": [
-                        {"text": sent[:80] + ("..." if len(sent) > 80 else ""), "is_correct": True},
-                        {"text": "The opposite of what is stated in the text.",   "is_correct": False},
-                        {"text": "This concept is not mentioned in the content.", "is_correct": False},
-                        {"text": "Only partially correct based on the content.",  "is_correct": False},
-                    ],
-                })
-
-        # ── True / False ──────────────────────────────────────────────────────
-        elif q_type == "true_false":
-            sent = None
-            for si in range(sent_idx, sent_idx + len(all_sents) + 1):
-                candidate = all_sents[si % len(all_sents)] if all_sents else ""
-                if candidate not in used_sents and len(candidate) > 30:
-                    sent = candidate; sent_idx = si + 1
-                    used_sents.add(sent); break
-            if not sent:
-                sent = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
-                sent_idx += 1
-            questions.append({
-                "text":          f"True or False: {sent}.",
-                "question_type": "true_false",
-                "marks":         1,
-                "explanation":   "This statement is directly supported by the content.",
-                "options": [
-                    {"text": "True",  "is_correct": True},
-                    {"text": "False", "is_correct": False},
-                ],
-            })
-
-        # ── Short Answer ──────────────────────────────────────────────────────
-        else:
-            fact = None
-            for fi in range(fact_idx, min(fact_idx + 30, len(facts))):
-                if facts[fi]["sentence"] not in used_sents:
-                    fact = facts[fi]; fact_idx = fi + 1
-                    used_sents.add(fact["sentence"]); break
-
-            if fact:
-                q_text  = f"Explain: {fact['subject'].strip('.')} — as described in the content."
-                explain = fact["sentence"]
-            else:
-                sent     = all_sents[sent_idx % len(all_sents)] if all_sents else "Review the content."
-                sent_idx += 1
-                q_text   = f"In your own words, explain: \"{sent[:100]}\"."
-                explain  = sent
-
-            questions.append({
-                "text":          q_text,
-                "question_type": "short_answer",
-                "marks":         2,
-                "explanation":   explain,
-                "options":       [],
-            })
-
-    while len(questions) < num_questions:
-        questions.append({
-            "text":          f"Summarise a key concept from the content (question {len(questions)+1}).",
-            "question_type": "short_answer",
-            "marks":         2,
-            "explanation":   "Refer to the syllabus for key concepts.",
-            "options":       [],
-        })
-
-    return {
-        "title":            exam_title or "Generated Exam",
-        "description":      "Auto-generated from syllabus content.",
-        "duration_minutes": time_limit,
-        "total_marks":      sum(q["marks"] for q in questions),
-        "pass_percentage":  40,
-        "negative_marking": False,
-        "sections":         [{"title": "General", "description": "", "questions": questions}],
-        "coverage_report": {
-            "total_topics_in_syllabus": max(1, len(facts)),
-            "topics_covered":           min(len(facts), num_questions),
-            "topics_missing":           0,
-            "coverage_percentage":      100,
-            "total_questions":          len(questions),
-            "question_distribution":    {"by_type": {}, "by_difficulty": {}},
-            "weak_areas":               [],
-            "source":                   "fallback",
-        },
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Pre-formatted question bank parser
-# Handles PDFs that already contain MCQs with [CORRECT] / Answer: (X) markers
+# QUESTION BANK DETECTOR & PARSER
+# If the text is already a question bank → extract questions directly, zero AI
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _is_question_bank(text: str) -> bool:
-    """Return True if the text looks like a pre-formatted MCQ question bank."""
-    # Format A: (a)/(b)/(c)/(d) options + Answer: (x) or checkmark Answer
-    paren_opts    = len(re.findall(r'^\([a-d]\)\s*\S', text, re.MULTILINE))
-    tick_answer   = len(re.findall(r'[✓√]\s*Answer\s*:', text))
-    answer_paren  = len(re.findall(r'Answer\s*:\s*\([a-d]\)', text, re.IGNORECASE))
-    # Format B: A)/B)/C)/D) options + [CORRECT] or Answer: (X)
-    cap_opts      = len(re.findall(r'^[A-D][\.\)]\s*\S', text, re.MULTILINE))
-    correct_marks = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
-    q_markers     = len(re.findall(r'^\d+[\.\ )]\s*\S', text, re.MULTILINE))
-
-    score = (paren_opts * 2) + (tick_answer * 4) + (answer_paren * 3) + \
-            (cap_opts * 2) + (correct_marks * 3) + (q_markers * 2)
-    logger.info("QB score=%d (paren=%d tick=%d ans=%d cap=%d corr=%d q=%d)",
-                score, paren_opts, tick_answer, answer_paren, cap_opts, correct_marks, q_markers)
-    return score >= 12
-
-
-def _parse_question_bank(
-    text: str,
-    num_questions: int,
-    time_limit: int,
-    exam_title: str | None,
-) -> dict:
     """
-    Parse pre-formatted MCQ question bank PDFs into ExamVerse format.
-    Handles two common formats:
+    Return True if this text is a pre-made question bank.
+    Looks for patterns that only appear in answer-key documents:
+      (a)/(b)/(c)/(d) style options  +  Answer: markers
+    """
+    # Count key signals
+    paren_options  = len(re.findall(r'^\s*\([a-d]\)\s*\S', text, re.MULTILINE))
+    tick_answers   = len(re.findall(r'[✓√]\s*Answer\s*:', text))
+    plain_answers  = len(re.findall(r'\bAnswer\s*:\s*\([a-d]\)', text, re.IGNORECASE))
+    correct_tags   = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
+    numbered_qs    = len(re.findall(r'^\s*\d+\.\s+\S', text, re.MULTILINE))
 
-      Format A (this PDF):
-        1. Question text?
-        (a) Option one
-        (b) Option two
-        (c) Option three
-        (d) Option four
-        ✓ Answer: (b) Option two
-        Explanation: ...
+    score = (paren_options * 2) + (tick_answers * 5) + (plain_answers * 4) + \
+            (correct_tags * 4)  + (numbered_qs)
 
-      Format B (older PDFs):
-        Q1. Question text?
-        A) Option  B) Option  C) Option [CORRECT]  D) Option
-        Answer: (C)
+    logger.info(
+        "QB detection: score=%d  paren_opts=%d  tick=%d  ans=%d  correct=%d  q#=%d",
+        score, paren_options, tick_answers, plain_answers, correct_tags, numbered_qs
+    )
+    return score >= 15
+
+
+def _parse_question_bank(text: str, num_questions: int, time_limit: int,
+                          exam_title: Optional[str]) -> dict:
+    """
+    Parse a pre-formatted question bank directly into ExamVerse format.
+    Handles:
+      Format A  (a)/(b)/(c)/(d) options + ✓ Answer: (x) + Explanation
+      Format B  A)/B)/C)/D)     options + [CORRECT] or Answer: (X)
     """
     questions = []
 
-    # ── Split into question blocks on a line starting with a number + dot/paren
-    blocks = re.split(r'(?m)(?=^\d+[\.\ )]\s+\S)', text)
+    # Split on lines that start a new question: "1." or "Q1." etc.
+    blocks = re.split(r'(?m)(?=^\s*(?:Q\s*)?\d+[\.\)]\s+\S)', text)
 
     for block in blocks:
         block = block.strip()
-        if not block or len(block) < 15:
+        if len(block) < 15:
             continue
 
-        # ── Extract question number and text ─────────────────────────────────
-        m_head = re.match(
-            r'^(\d+)[\.\ )]\s*(.+?)(?=\n\s*[\(\[A-Da-d]|\Z)',
-            block, re.DOTALL
-        )
-        if not m_head:
+        # ── Extract question number + text ────────────────────────────────────
+        m = re.match(r'^(?:Q\s*)?(\d+)[\.\)]\s*(.+?)(?=\n\s*[\(\[A-Da-d]|\Z)',
+                     block, re.DOTALL)
+        if not m:
             continue
 
-        q_text = re.sub(r'\s+', ' ', m_head.group(2)).strip()
-        # Remove stray answer keys embedded in q_text
-        q_text = re.sub(r'[✓√]\s*Answer\s*:.*$', '', q_text, flags=re.IGNORECASE|re.MULTILINE).strip()
-        q_text = re.sub(r'Explanation\s*:.*$', '', q_text, flags=re.IGNORECASE|re.MULTILINE).strip()
+        q_text = re.sub(r'\s+', ' ', m.group(2)).strip()
+        # Strip any answer/explanation that leaked into the question text
+        q_text = re.sub(r'\s*[✓√]\s*Answer\s*:.*$', '', q_text,
+                        flags=re.IGNORECASE | re.MULTILINE).strip()
+        q_text = re.sub(r'\s*Explanation\s*:.*$', '', q_text,
+                        flags=re.IGNORECASE | re.MULTILINE).strip()
         if not q_text or len(q_text) < 4:
             continue
 
-        # ── Format A: (a)/(b)/(c)/(d) options ────────────────────────────────
-        paren_opts = re.findall(r'^\(([a-d])\)\s*(.+?)$', block, re.MULTILINE | re.IGNORECASE)
-
-        # ── Format B: A)/B)/C)/D) options (multi-line or inline) ──────────────
-        cap_opts = re.findall(r'^([A-D])[\.\ )]\s*(.+?)$', block, re.MULTILINE | re.IGNORECASE)
-
-        # ── Inline format B: "A) opt  B) opt  C) opt [CORRECT]  D) opt" ──────
-        if not cap_opts and not paren_opts:
-            inline = re.search(r'^[A-D][\.\ )].*', block, re.MULTILINE | re.IGNORECASE)
+        # ── Extract options ───────────────────────────────────────────────────
+        # Format A: (a) text  (each on its own line)
+        paren_opts = re.findall(r'^\s*\(([a-d])\)\s*(.+?)$', block,
+                                re.MULTILINE | re.IGNORECASE)
+        # Format B: A) text or A. text  (each on its own line)
+        cap_opts   = re.findall(r'^\s*([A-D])[\.\)]\s*(.+?)$', block,
+                                re.MULTILINE | re.IGNORECASE) if not paren_opts else []
+        # Format B inline: "A) opt1  B) opt2  C) opt3  D) opt4"
+        if not paren_opts and not cap_opts:
+            inline = re.search(r'[A-D]\)\s*.+', block, re.IGNORECASE)
             if inline:
                 cap_opts = re.findall(r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*$)',
                                       inline.group(), re.IGNORECASE)
 
         raw_opts = paren_opts if paren_opts else cap_opts
-
         if not raw_opts:
             continue
 
-        # ── Determine correct answer letter ───────────────────────────────────
-        # Priority 1: ✓ Answer: (b) or Answer: (b)
+        # ── Find correct answer letter ────────────────────────────────────────
         correct_letter = None
+
+        # ✓ Answer: (b) or Answer: (b)
         m_ans = re.search(r'[✓√]?\s*Answer\s*:\s*\(?([a-d])\)?', block, re.IGNORECASE)
         if m_ans:
             correct_letter = m_ans.group(1).lower()
 
-        # Priority 2: [CORRECT] tag next to an option
+        # [CORRECT] next to an option letter
         if not correct_letter:
-            m_corr = re.search(r'([A-Da-d])[\.\ )]\s*[^\n]*\[CORRECT\]', block, re.IGNORECASE)
+            m_corr = re.search(r'([A-Da-d])[\.\)][^\n]*\[CORRECT\]', block, re.IGNORECASE)
             if m_corr:
                 correct_letter = m_corr.group(1).lower()
 
-        # ── Build clean option list ───────────────────────────────────────────
+        # ── Extract explanation ───────────────────────────────────────────────
         explanation = ""
-        m_expl = re.search(r'Explanation\s*:\s*(.+?)(?=\n\n|\Z)', block,
+        m_expl = re.search(r'Explanation\s*:\s*(.+?)(?=\n\s*\n|\Z)', block,
                            re.DOTALL | re.IGNORECASE)
         if m_expl:
-            explanation = re.sub(r'\s+', ' ', m_expl.group(1)).strip()[:300]
+            explanation = re.sub(r'\s+', ' ', m_expl.group(1)).strip()[:400]
 
+        # ── Build option list ─────────────────────────────────────────────────
         options = []
         for letter, opt_text in raw_opts:
             opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE)
-            # Strip explanation that leaked into option text
-            opt_text = re.sub(r'[✓√]\s*Answer.*$', '', opt_text, flags=re.IGNORECASE).strip()
-            opt_text = re.sub(r'Explanation.*$', '', opt_text, flags=re.IGNORECASE).strip()
+            opt_text = re.sub(r'[✓√]\s*Answer.*$', '', opt_text, flags=re.IGNORECASE)
+            opt_text = re.sub(r'Explanation.*$', '', opt_text, flags=re.IGNORECASE)
             opt_text = re.sub(r'\s+', ' ', opt_text).strip()
             if not opt_text:
                 continue
@@ -676,7 +178,7 @@ def _parse_question_bank(
         if not options:
             continue
 
-        # Fallback: mark first as correct if none marked
+        # Ensure exactly one correct answer
         if not any(o["is_correct"] for o in options):
             options[0]["is_correct"] = True
 
@@ -692,24 +194,23 @@ def _parse_question_bank(
             break
 
     if not questions:
-        raise ValueError("Could not parse any questions from the question bank PDF.")
+        raise ValueError("Could not parse any questions from question bank.")
 
-    logger.info("QB parser: extracted %d / %d questions", len(questions), num_questions)
+    logger.info("QB parser extracted %d questions", len(questions))
 
     if not exam_title:
-        # Use first meaningful non-question line as title
         for line in text.splitlines():
             line = line.strip()
-            if line and not re.match(r'^\d+[\.\ )]', line) and len(line) > 10:
-                exam_title = line[:80]
+            if line and not re.match(r'^\d+[\.\)]', line) and 5 < len(line) < 100:
+                exam_title = line
                 break
-        exam_title = exam_title or "Question Bank Exam"
+        exam_title = exam_title or "Question Bank"
 
     total = len(questions)
     return {
         "title":            exam_title,
-        "description":      f"Imported from question bank — {total} MCQ questions.",
-        "duration_minutes": time_limit,
+        "description":      f"Imported directly from question bank — {total} questions.",
+        "duration_minutes": time_limit if time_limit else total * 1,
         "total_marks":      total,
         "pass_percentage":  40,
         "negative_marking": False,
@@ -727,75 +228,394 @@ def _parse_question_bank(
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Gemini API
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _call_gemini(prompt: str, max_tokens: int = 8192) -> str:
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY not set")
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7},
+    }
+    last_err = "no models tried"
+    async with httpx.AsyncClient(timeout=_GEMINI_TIMEOUT) as client:
+        for model in _GEMINI_MODELS:
+            url = f"{_GEMINI_BASE}/{model}:generateContent?key={GEMINI_API_KEY}"
+            try:
+                r = await client.post(url, json=payload,
+                                      headers={"Content-Type": "application/json"})
+                if r.status_code == 404:
+                    last_err = f"{model} not found"; continue
+                if r.status_code in (400, 401, 403):
+                    last_err = f"Auth/quota error {r.status_code}: {r.text[:200]}"; break
+                if r.status_code != 200:
+                    last_err = f"HTTP {r.status_code} from {model}: {r.text[:200]}"; continue
+                data = r.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except httpx.TimeoutException:
+                last_err = f"timeout on {model}"; continue
+    raise RuntimeError(f"Gemini failed: {last_err}")
+
+
+def _extract_json(text: str) -> Any:
+    text = re.sub(r'```(?:json)?\s*', '', text).replace('```', '').strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    for pat in (r'\{[\s\S]*\}', r'\[[\s\S]*\]'):
+        m = re.search(pat, text)
+        if m:
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                pass
+    raise ValueError(f"No JSON in response: {text[:300]}")
+
+
+def _build_prompt(content, num_questions, difficulty, question_types,
+                  time_limit, exam_title, focus_topics) -> str:
+    title_hint = f'Title: "{exam_title}".' if exam_title else "Infer a good title."
+    focus_hint = f"Focus on: {focus_topics}." if focus_topics else ""
+    type_map = {
+        "mcq":        f"All {num_questions} must be mcq_single (4 options, 1 correct).",
+        "true_false": f"All {num_questions} must be true_false.",
+        "short":      f"All {num_questions} must be short_answer (empty options array).",
+        "mixed":      f"Mix: ~60% mcq_single, ~20% true_false, ~20% short_answer.",
+    }
+    return textwrap.dedent(f"""
+You are an expert exam setter. Generate exactly {num_questions} questions from the content below.
+Difficulty: {difficulty}. {type_map.get(question_types, type_map['mixed'])}
+{title_hint} {focus_hint}
+
+Every question MUST have a non-empty explanation.
+MCQ: exactly 4 options, exactly 1 correct (is_correct: true).
+Return ONLY valid JSON — no markdown, no text outside JSON.
+
+JSON FORMAT:
+{{
+  "title": "...",
+  "description": "...",
+  "duration_minutes": {time_limit},
+  "total_marks": {num_questions},
+  "pass_percentage": 40,
+  "negative_marking": false,
+  "sections": [{{
+    "title": "Section 1",
+    "description": "",
+    "questions": [
+      {{
+        "text": "What is the capital of Odisha?",
+        "question_type": "mcq_single",
+        "marks": 1,
+        "explanation": "Bhubaneswar is the capital of Odisha.",
+        "options": [
+          {{"text": "Cuttack",      "is_correct": false}},
+          {{"text": "Bhubaneswar", "is_correct": true}},
+          {{"text": "Puri",         "is_correct": false}},
+          {{"text": "Rourkela",     "is_correct": false}}
+        ]
+      }}
+    ]
+  }}]
+}}
+
+CONTENT:
+---
+{content[:7000]}
+---
+Return ONLY the JSON object.
+""").strip()
+
+
+def _normalise(raw: dict, num_questions: int, time_limit: int) -> dict:
+    sections = raw.get("sections") or []
+    if not sections and raw.get("questions"):
+        sections = [{"title": "Section 1", "description": "", "questions": raw["questions"]}]
+    clean = []
+    total = 0
+    for sec in sections:
+        qs = []
+        for q in (sec.get("questions") or []):
+            opts = q.get("options") or []
+            ch   = (q.get("correct_answer") or "").strip().lower()
+            options = []
+            for o in opts:
+                t  = str(o.get("text", "")).strip()
+                ic = bool(o.get("is_correct", False))
+                if not ic and ch:
+                    ic = t.lower() == ch or t.lower().startswith(ch)
+                options.append({"text": t, "is_correct": ic})
+            if options and not any(o["is_correct"] for o in options):
+                options[0]["is_correct"] = True
+            marks = float(q.get("marks") or 1)
+            total += marks
+            qs.append({
+                "text":          str(q.get("text", "")).strip(),
+                "question_type": q.get("question_type", "mcq_single"),
+                "marks":         marks,
+                "explanation":   str(q.get("explanation", "") or ""),
+                "options":       options,
+            })
+        clean.append({"title": str(sec.get("title") or "Section").strip(),
+                      "description": str(sec.get("description") or ""),
+                      "questions": qs})
+    all_qs = [q for s in clean for q in s["questions"]]
+    return {
+        "title":            str(raw.get("title") or "Generated Exam").strip(),
+        "description":      str(raw.get("description") or ""),
+        "duration_minutes": int(raw.get("duration_minutes") or time_limit),
+        "total_marks":      int(total) or len(all_qs),
+        "pass_percentage":  int(raw.get("pass_percentage") or 40),
+        "negative_marking": bool(raw.get("negative_marking", False)),
+        "sections":         clean,
+        "coverage_report": {
+            "total_topics_in_syllabus": 1, "topics_covered": 1,
+            "topics_missing": 0, "coverage_percentage": 100,
+            "total_questions": len(all_qs),
+            "question_distribution": {"by_type": {}, "by_difficulty": {}},
+            "weak_areas": [], "source": "gemini",
+        },
+    }
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Public API
+# Smart fallback (runs only for real syllabi when Gemini is unavailable)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_SW = {
+    "the","a","an","and","or","but","in","on","at","to","for","of","with","by",
+    "from","is","are","was","were","be","been","have","has","had","do","does",
+    "did","will","would","could","should","this","that","these","those","it",
+    "its","they","them","their","we","our","he","she","his","her","you","i",
+    "also","so","than","too","very","just","each","every","some","any","all",
+    "more","most","other","such","which","when","where","how","who","what",
+    "figure","table","given","above","below","chapter","section","page",
+}
+
+def _good(w: str) -> bool:
+    w = w.lower().strip()
+    return w not in _SW and len(w) >= 3 and bool(re.search(r'[a-zA-Z]', w))
+
+def _extract_facts(text: str) -> list[dict]:
+    sents = [re.sub(r'\s+', ' ', s).strip().rstrip('.!?,;:')
+             for s in re.split(r'(?<=[.!?])\s+|\n', text) if len(s.strip()) > 25]
+    facts, seen = [], set()
+    for sent in sents:
+        # Pattern 1: "X is/are Y"
+        m = re.match(
+            r'^(.{5,60}?)\s+(?:is|are|was|were)\s+(?:the\s+)?(.{3,60})$',
+            sent, re.IGNORECASE
+        )
+        if m:
+            pred = m.group(2).strip()
+            cands = [c for c in re.findall(r'\b([A-Z][a-zA-Z]{2,}|\d+[a-z]*)\b', pred)
+                     if _good(c)]
+            if not cands:
+                cands = [w for w in re.findall(r'\b[A-Za-z]{4,}\b', pred) if _good(w)]
+            if cands:
+                ans = cands[-1]
+                if ans.lower() not in seen:
+                    seen.add(ans.lower())
+                    facts.append({"sentence": sent, "subject": m.group(1).strip(),
+                                  "answer": ans, "style": "is"})
+                continue
+        # Pattern 2: numbers
+        for num, unit in re.findall(r'\b(\d+(?:\.\d+)?)\s*(years?|km|m|BCE|CE|%|kg)?\b', sent):
+            ans = f"{num} {unit}".strip() if unit else num
+            if ans not in seen and int(float(num)) > 0:
+                seen.add(ans)
+                blank = re.sub(re.escape(ans), "______", sent, count=1)
+                facts.append({"sentence": sent, "subject": blank,
+                              "answer": ans, "style": "numeric"})
+                break
+    return facts
+
+def _distractors(correct: str, text: str, n: int = 3) -> list[str]:
+    pool = list(dict.fromkeys(
+        w for w in re.findall(r'\b[A-Za-z]{3,}\b', text)
+        if _good(w) and w.lower() != correct.lower()
+    ))
+    random.shuffle(pool)
+    result = pool[:n]
+    pad = ["None of the above", "Cannot be determined", "All of the above"]
+    while len(result) < n:
+        result.append(pad[len(result) % len(pad)])
+    return result[:n]
+
+def _fallback_generate(content, num_questions, difficulty, question_types,
+                       time_limit, exam_title) -> dict:
+    facts  = _extract_facts(content)
+    sents  = [re.sub(r'\s+', ' ', s).strip()
+              for s in re.split(r'(?<=[.!?])\s+|\n', content) if len(s.strip()) > 40]
+
+    if question_types == "mcq":
+        seq = ["mcq_single"] * num_questions
+    elif question_types == "true_false":
+        seq = ["true_false"] * num_questions
+    elif question_types == "short":
+        seq = ["short_answer"] * num_questions
+    else:
+        n_m = max(1, round(num_questions * 0.6))
+        n_t = max(1, round(num_questions * 0.2))
+        n_s = max(0, num_questions - n_m - n_t)
+        seq = ["mcq_single"] * n_m + ["true_false"] * n_t + ["short_answer"] * n_s
+        random.shuffle(seq)
+
+    questions, fi, si, used = [], 0, 0, set()
+
+    for qtype in seq[:num_questions]:
+        if qtype == "mcq_single":
+            fact = next((facts[i] for i in range(fi, min(fi+30, len(facts)))
+                         if facts[i]["sentence"] not in used), None)
+            if fact:
+                fi += 1; used.add(fact["sentence"])
+                ans  = fact["answer"]
+                qtxt = (f"Fill in the blank: {fact['subject']}?"
+                        if fact["style"] in ("numeric",)
+                        else f"According to the content, what is the {fact['subject'].lower().rstrip('.')}?")
+                opts = [ans] + _distractors(ans, content, 3)
+                random.shuffle(opts)
+                questions.append({
+                    "text": qtxt, "question_type": "mcq_single", "marks": 1,
+                    "explanation": f'From the text: "{fact["sentence"]}"',
+                    "options": [{"text": o, "is_correct": (o == ans)} for o in opts],
+                })
+            else:
+                sent = sents[si % len(sents)] if sents else "Review content."
+                si += 1
+                questions.append({
+                    "text": "Which statement correctly reflects the content?",
+                    "question_type": "mcq_single", "marks": 1,
+                    "explanation": sent[:120],
+                    "options": [
+                        {"text": sent[:80] + ("..." if len(sent) > 80 else ""), "is_correct": True},
+                        {"text": "The opposite is stated in the text.", "is_correct": False},
+                        {"text": "Not mentioned in the content.", "is_correct": False},
+                        {"text": "Only partially correct.", "is_correct": False},
+                    ],
+                })
+        elif qtype == "true_false":
+            sent = next((sents[i] for i in range(si, si + len(sents) + 1)
+                         if sents[i % len(sents)] not in used), sents[si % len(sents)] if sents else "Review.")
+            si += 1; used.add(sent)
+            questions.append({
+                "text": f"True or False: {sent}.",
+                "question_type": "true_false", "marks": 1,
+                "explanation": "This statement is directly stated in the content.",
+                "options": [{"text": "True", "is_correct": True},
+                            {"text": "False", "is_correct": False}],
+            })
+        else:
+            fact = next((facts[i] for i in range(fi, min(fi+30, len(facts)))
+                         if facts[i]["sentence"] not in used), None)
+            if fact:
+                fi += 1; used.add(fact["sentence"])
+                qtxt = f"Explain: {fact['subject'].strip('.')} — as described in the content."
+                expl = fact["sentence"]
+            else:
+                sent = sents[si % len(sents)] if sents else "Review content."
+                si += 1
+                qtxt = f'In your own words, explain: "{sent[:100]}".'
+                expl = sent
+            questions.append({"text": qtxt, "question_type": "short_answer",
+                               "marks": 2, "explanation": expl, "options": []})
+
+    return {
+        "title":            exam_title or "Generated Exam",
+        "description":      "Auto-generated from syllabus content.",
+        "duration_minutes": time_limit,
+        "total_marks":      sum(q["marks"] for q in questions),
+        "pass_percentage":  40,
+        "negative_marking": False,
+        "sections":         [{"title": "Section 1", "description": "", "questions": questions}],
+        "coverage_report": {
+            "total_topics_in_syllabus": max(1, len(facts)),
+            "topics_covered": min(len(facts), num_questions),
+            "topics_missing": 0, "coverage_percentage": 100,
+            "total_questions": len(questions),
+            "question_distribution": {"by_type": {}, "by_difficulty": {}},
+            "weak_areas": [], "source": "fallback",
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PUBLIC API
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def generate_exam_from_syllabus(
     syllabus_text:  str,
-    num_questions:  int           = 10,
-    difficulty:     str           = "mixed",
-    question_types: str           = "mixed",
-    time_limit:     int           = 30,
-    exam_title:     Optional[str] = None,
-    focus_topics:   Optional[str] = None,
+    num_questions:  int            = 10,
+    difficulty:     str            = "mixed",
+    question_types: str            = "mixed",
+    time_limit:     int            = 30,
+    exam_title:     Optional[str]  = None,
+    focus_topics:   Optional[str]  = None,
 ) -> dict:
-    # Step 1: detect pre-formatted question bank -- parse directly
-    if _is_question_bank(syllabus_text):
-        logger.info("Detected pre-formatted question bank -- parsing directly")
-        try:
-            return _parse_question_bank(syllabus_text, num_questions, time_limit, exam_title)
-        except Exception as exc:
-            logger.warning("Question bank parser failed (%s) -- continuing to AI", exc)
 
-    # Step 2: AI / fallback generation
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set -- using fallback generator")
-        return _fallback_generate(syllabus_text, num_questions, difficulty,
-                                  question_types, time_limit, exam_title)
-    prompt = _build_prompt(syllabus_text, num_questions, difficulty, question_types,
-                           time_limit, exam_title, focus_topics)
-    try:
-        raw_text = await _call_gemini(prompt, max_tokens=8192)
-        raw_json = _extract_json(raw_text)
-        result   = _normalise(raw_json, num_questions, time_limit)
-        logger.info("Gemini OK: %d questions generated",
-                    sum(len(s["questions"]) for s in result["sections"]))
-        return result
-    except Exception as exc:
-        logger.error("Gemini failed (%s) -- falling back to rule-based generator", exc)
-        return _fallback_generate(syllabus_text, num_questions, difficulty,
-                                  question_types, time_limit, exam_title)
+    # ── STEP 1: Question bank? → parse directly, NO AI ──────────────────────
+    if _is_question_bank(syllabus_text):
+        logger.info("Question bank detected — parsing directly, skipping AI")
+        try:
+            return _parse_question_bank(
+                syllabus_text, num_questions, time_limit, exam_title
+            )
+        except Exception as exc:
+            logger.error("QB parser failed: %s — cannot fall back to AI for a question bank", exc)
+            raise RuntimeError(
+                f"This looks like a question bank but parsing failed: {exc}"
+            ) from exc
+
+    # ── STEP 2: Regular syllabus → try Gemini ───────────────────────────────
+    if GEMINI_API_KEY:
+        prompt = _build_prompt(syllabus_text, num_questions, difficulty,
+                               question_types, time_limit, exam_title, focus_topics)
+        try:
+            raw  = await _call_gemini(prompt)
+            data = _extract_json(raw)
+            result = _normalise(data, num_questions, time_limit)
+            logger.info("Gemini generated %d questions",
+                        sum(len(s["questions"]) for s in result["sections"]))
+            return result
+        except Exception as exc:
+            logger.error("Gemini failed (%s) — using fallback generator", exc)
+
+    # ── STEP 3: Fallback rule-based generator ────────────────────────────────
+    logger.warning("Using fallback generator")
+    return _fallback_generate(syllabus_text, num_questions, difficulty,
+                              question_types, time_limit, exam_title)
 
 
 async def generate_exam_from_search(
     topics:         list[str],
-    num_questions:  int           = 10,
-    difficulty:     str           = "mixed",
-    question_types: str           = "mixed",
-    time_limit:     int           = 30,
-    exam_title:     Optional[str] = None,
-    focus_topics:   Optional[str] = None,
-    extra_context:  str           = "",
+    num_questions:  int            = 10,
+    difficulty:     str            = "mixed",
+    question_types: str            = "mixed",
+    time_limit:     int            = 30,
+    exam_title:     Optional[str]  = None,
+    focus_topics:   Optional[str]  = None,
+    extra_context:  str            = "",
 ) -> dict:
     combined = ""
     if TAVILY_API_KEY and topics:
         try:
             query = ", ".join(topics[:5]) + (f" {extra_context}" if extra_context else "")
             async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
+                r = await client.post(
                     "https://api.tavily.com/search",
                     json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 5},
                     headers={"Content-Type": "application/json"},
                 )
-            if resp.status_code == 200:
-                results = resp.json().get("results", [])
+            if r.status_code == 200:
+                results = r.json().get("results", [])
                 combined = "\n\n".join(
-                    f"{r.get('title','')}\n{r.get('content','')}" for r in results
+                    f"{x.get('title','')}\n{x.get('content','')}" for x in results
                 )
         except Exception as exc:
-            logger.warning("Tavily search failed: %s", exc)
+            logger.warning("Tavily failed: %s", exc)
 
     if not combined:
         combined = (f"Topics: {', '.join(topics)}\nContext: {extra_context}\n\n"
