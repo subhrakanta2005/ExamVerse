@@ -391,7 +391,271 @@ export default function SyllabusUpload() {
                 Generate Another
               </button>
             </div>
-	< truncated lines 6441-6720 >
+          </div>
+        )}
+
+        {/* IMPORTING */}
+        {step === "importing" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
+            <div className="relative w-24 h-24 mx-auto mb-6">
+              <svg className="w-24 h-24 -rotate-90" viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#e0e7ff" strokeWidth="8" />
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#10b981" strokeWidth="8"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - (importProgress.total ? importProgress.current / importProgress.total : 0))}`}
+                  strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.3s ease" }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-lg font-bold text-emerald-600">
+                  {importProgress.total ? Math.round(importProgress.current / importProgress.total * 100) : 0}%
+                </span>
+              </div>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Saving to Database…</h2>
+            <p className="text-sm text-gray-500 mb-2">{importProgress.label}</p>
+            <p className="text-xs text-gray-400">{importProgress.current} of {importProgress.total} questions saved</p>
+          </div>
+        )}
+
+        {/* DONE */}
+        {step === "done" && result && (
+          <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+            <div className="bg-gradient-to-r from-indigo-600 to-violet-600 px-8 py-10 text-white text-center">
+              <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4"><CheckIcon /></div>
+              <h2 className="text-2xl font-bold mb-1">Exam Generated!</h2>
+              <p className="text-indigo-200 text-sm">Preview below — click "Save to Database" to make it live</p>
+            </div>
+            {errorMsg && (
+              <div className="mx-8 mt-6 flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
+                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-red-100 flex items-center justify-center font-bold text-red-600">!</span>
+                {errorMsg}
+              </div>
+            )}
+            <div className="p-8 grid grid-cols-2 sm:grid-cols-4 gap-4 border-b border-gray-100">
+              {[
+                { label: "Questions", value: (result.exam?.sections || []).flatMap(s => s.questions || []).length },
+                { label: "Total Marks", value: result.exam?.total_marks },
+                { label: "Duration", value: `${result.exam?.duration_minutes} min` },
+                { label: "Sections", value: result.exam?.sections?.length },
+              ].map(({ label, value }) => (
+                <div key={label} className="text-center">
+                  <p className="text-2xl font-bold text-gray-900">{value}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+                </div>
+              ))}
+            </div>
+            {result.coverage_report && (
+              <div className="px-8 py-4 bg-gray-50 border-b border-gray-100 text-sm text-gray-600">
+                Coverage: <span className="font-semibold text-indigo-600">{result.coverage_report.coverage_percentage}%</span>
+                {result.coverage_report.note && <span className="ml-3 text-xs text-gray-400">{result.coverage_report.note}</span>}
+              </div>
+            )}
+            {(result.exam?.sections || []).flatMap(s => s.questions || []).slice(0, 5).length > 0 && (
+              <div className="px-8 py-6 space-y-4 border-b border-gray-100">
+                <h3 className="text-sm font-semibold text-gray-700">Question Preview (first 5)</h3>
+                {(result.exam?.sections || []).flatMap(s => s.questions || []).slice(0, 5).map((q, i) => (
+                  <div key={i} className="bg-gray-50 rounded-xl p-4">
+                    <p className="text-sm font-medium text-gray-800 mb-2">{i + 1}. {q.text}</p>
+                    {(q.options || []).map((o, oi) => (
+                      <div key={oi} className={`text-xs px-3 py-1.5 rounded-lg mb-1 ${o.is_correct ? "bg-emerald-50 text-emerald-700 font-medium" : "text-gray-500"}`}>
+                        {String.fromCharCode(65 + oi)}. {o.text}
+                        {o.is_correct && <span className="ml-2 text-emerald-500">✓ correct</span>}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="p-8 flex flex-col sm:flex-row gap-3">
+              <button onClick={handleImport} className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+                <ImportIcon /> Save to Database
+              </button>
+              <button onClick={() => navigate("/admin/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
+                All Exams
+              </button>
+              <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
+                Start Over
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* GENERATING */}
+        {step === "generating" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
+            <div className="relative w-24 h-24 mx-auto mb-6">
+              <svg className="w-24 h-24 -rotate-90 animate-spin" style={{ animationDuration: "2s" }} viewBox="0 0 96 96">
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#e0e7ff" strokeWidth="8" />
+                <circle cx="48" cy="48" r="40" fill="none" stroke="#4f46e5" strokeWidth="8"
+                  strokeDasharray={`${2 * Math.PI * 40}`}
+                  strokeDashoffset={`${2 * Math.PI * 40 * (1 - progress / 100)}`}
+                  strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.5s ease" }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="text-lg font-bold text-indigo-600">{Math.round(progress)}%</span>
+              </div>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              {inputMode === "search" ? "Searching & generating your exam…" : "Generating your exam…"}
+            </h2>
+            <p className="text-sm text-gray-500 mb-6">
+              {inputMode === "search"
+                ? "Searching the web for your topics and crafting questions. Takes ~15–30 seconds."
+                : progress < 15 ? "Extracting text from your PDF…" : "Sending to AI and generating questions. Takes ~20–40 seconds."}
+            </p>
+          </div>
+        )}
+
+        {/* ERROR */}
+        {step === "error" && (
+          <div className="bg-white rounded-2xl border border-red-200 p-8 text-center">
+            <div className="w-14 h-14 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <span className="text-2xl font-bold text-red-500">!</span>
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Generation Failed</h2>
+            <p className="text-sm text-red-600 mb-6">{errorMsg}</p>
+            <button onClick={reset} className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl transition-colors">
+              Try Again
+            </button>
+          </div>
+        )}
+
+        {/* UPLOAD */}
+        {step === "upload" && (
+          <>
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-900 mb-3">1. Choose Input Method</h2>
+                <div className="flex gap-2">
+                  {[
+                    { id: "file",   label: "Upload File",  icon: <UploadIcon /> },
+                    { id: "text",   label: "Paste Text",   icon: <span className="text-base">📝</span> },
+                    { id: "search", label: "Web Search",   icon: <SearchIcon /> },
+                  ].map(({ id, label, icon }) => (
+                    <button
+                      key={id}
+                      onClick={() => setInputMode(id)}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        inputMode === id
+                          ? "bg-indigo-600 text-white shadow-sm"
+                          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      }`}
+                    >
+                      {icon}{label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="p-6">
+                {inputMode === "file" && (
+                  file ? (
+                    <div className="flex items-center gap-4 p-4 bg-indigo-50 border border-indigo-200 rounded-xl">
+                      <div className="text-indigo-500"><FileIcon /></div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{file.name}</p>
+                        <p className="text-sm text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
+                      </div>
+                      <button onClick={() => setFile(null)} className="text-gray-400 hover:text-red-500 transition-colors"><XIcon /></button>
+                    </div>
+                  ) : (
+                    <div
+                      onDrop={handleDrop}
+                      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+                      onDragLeave={() => setDragging(false)}
+                      onClick={() => fileInputRef.current?.click()}
+                      className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-all ${dragging ? "border-indigo-400 bg-indigo-50" : "border-gray-200 hover:border-indigo-300 hover:bg-gray-50"}`}
+                    >
+                      <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="hidden" onChange={e => e.target.files[0] && acceptFile(e.target.files[0])} />
+                      <div className={`inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-4 transition-colors ${dragging ? "bg-indigo-100 text-indigo-600" : "bg-gray-100 text-gray-400"}`}><UploadIcon /></div>
+                      <p className="font-semibold text-gray-700 mb-1">Drop your syllabus here</p>
+                      <p className="text-sm text-gray-400">or click to browse — PDF, DOCX, or TXT up to 20 MB</p>
+                    </div>
+                  )
+                )}
+
+                {inputMode === "text" && (
+                  <div>
+                    <textarea
+                      value={syllabusText}
+                      onChange={e => setSyllabusText(e.target.value)}
+                      placeholder={"Paste your syllabus content here…\n\nExample:\nUnit 1: Introduction\n- Topic A, Topic B\nUnit 2: Advanced\n- Topic C, Topic D"}
+                      className="w-full h-52 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    />
+                    <p className="text-xs text-gray-400 mt-1.5">
+                      {syllabusText.length} characters{" "}
+                      {syllabusText.length < 50 && syllabusText.length > 0 && <span className="text-amber-500">(need at least 50)</span>}
+                    </p>
+                  </div>
+                )}
+
+                {inputMode === "search" && (
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3 p-4 bg-indigo-50 border border-indigo-100 rounded-xl">
+                      <div className="text-indigo-500 mt-0.5 flex-shrink-0"><SearchIcon /></div>
+                      <div>
+                        <p className="text-sm font-medium text-indigo-800 mb-0.5">Web Search Mode</p>
+                        <p className="text-xs text-indigo-600">Enter topics and the AI will search the web for current content, then generate questions from what it finds.</p>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Topics to search <span className="text-red-400">*</span></label>
+                      <textarea
+                        value={searchTopics}
+                        onChange={e => setSearchTopics(e.target.value)}
+                        placeholder={"Enter topics separated by commas or new lines…\n\nExamples:\nOdisha History, Indian Constitution, General Science"}
+                        className="w-full h-36 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                      />
+                    </div>
+                    <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-xs text-amber-700">
+                      💡 <strong>Tip:</strong> More specific topics = better questions.
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-900">2. Exam Configuration</h2>
+              </div>
+              <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Exam Title <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input type="text" value={config.exam_title} onChange={e => updateConfig("exam_title", e.target.value)} placeholder="e.g. OSSSC RI/ARI Mock Test" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Questions: <span className="text-indigo-600 font-bold">{config.num_questions}</span></label>
+                  <input type="range" min={3} max={300} value={config.num_questions} onChange={e => updateConfig("num_questions", Number(e.target.value))} className="w-full accent-indigo-600" />
+                  <div className="flex justify-between text-xs text-gray-400 mt-0.5"><span>3</span><span>300</span></div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Time: <span className="text-indigo-600 font-bold">{config.time_limit} min</span></label>
+                  <input type="range" min={5} max={180} step={5} value={config.time_limit} onChange={e => updateConfig("time_limit", Number(e.target.value))} className="w-full accent-indigo-600" />
+                  <div className="flex justify-between text-xs text-gray-400 mt-0.5"><span>5 min</span><span>3 hr</span></div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Difficulty</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {["easy","medium","hard","mixed"].map(d => (
+                      <button key={d} onClick={() => updateConfig("difficulty", d)} className={`py-2 rounded-xl text-sm font-medium border transition-all capitalize ${config.difficulty === d ? "border-indigo-600 bg-indigo-50 text-indigo-700" : "border-gray-200 text-gray-600 hover:border-gray-300"}`}>
+                        <span className={`inline-block w-2 h-2 rounded-full mr-1.5 ${d==="easy"?"bg-emerald-400":d==="medium"?"bg-amber-400":d==="hard"?"bg-red-400":"bg-violet-400"}`} />{d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Question Type</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[{val:"mcq",label:"MCQ Only"},{val:"mixed",label:"Mixed"},{val:"true_false",label:"True/False"},{val:"short",label:"Short Answer"}].map(({val,label}) => (
+                      <button key={val} onClick={() => updateConfig("question_types", val)} className={`py-2 rounded-xl text-sm font-medium border transition-all ${config.question_types===val?"border-indigo-600 bg-indigo-50 text-indigo-700":"border-gray-200 text-gray-600 hover:border-gray-300"}`}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Focus Topics <span className="text-gray-400 font-normal">(optional, comma-separated)</span></label>
+                  <input type="text" value={config.focus_topics} onChange={e => updateConfig("focus_topics", e.target.value)} placeholder="e.g. Odisha Geography, Indian History" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                 </div>
               </div>
             </div>
