@@ -46,7 +46,12 @@ async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     if ext == "pdf" and _PYPDF:
         try:
             reader = PdfReader(_io.BytesIO(file_bytes))
-            return "\n".join(p.extract_text() or "" for p in reader.pages[:80])
+            # Extract all pages; keep newlines between pages
+            pages = []
+            for page in reader.pages[:80]:
+                text = page.extract_text() or ""
+                pages.append(text)
+            return "\n\n".join(pages)
         except Exception as e:
             logger.warning("pypdf error: %s", e)
     if ext in ("docx", "doc") and _DOCX:
@@ -74,12 +79,11 @@ def _is_question_bank(text: str) -> bool:
     Looks for patterns that only appear in answer-key documents:
       (a)/(b)/(c)/(d) style options  +  Answer: markers
     """
-    # Count key signals
-    paren_options  = len(re.findall(r'^\s*\([a-d]\)\s*\S', text, re.MULTILINE))
+    paren_options  = len(re.findall(r'\([a-d]\)\s*\S', text, re.IGNORECASE))
     tick_answers   = len(re.findall(r'[✓√]\s*Answer\s*:', text))
     plain_answers  = len(re.findall(r'\bAnswer\s*:\s*\([a-d]\)', text, re.IGNORECASE))
     correct_tags   = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
-    numbered_qs    = len(re.findall(r'^\s*\d+\.\s+\S', text, re.MULTILINE))
+    numbered_qs    = len(re.findall(r'^\s*\d+[\.\)]\s+\S', text, re.MULTILINE))
 
     score = (paren_options * 2) + (tick_answers * 5) + (plain_answers * 4) + \
             (correct_tags * 4)  + (numbered_qs)
@@ -91,66 +95,156 @@ def _is_question_bank(text: str) -> bool:
     return score >= 15
 
 
+def _clean_option_text(text: str) -> str:
+    """Strip answer markers, ticks, explanation leaks from an option string."""
+    # Remove answer markers like "✓ Answer: (b)" or "Answer: (b) Rice"
+    text = re.sub(r'[✓√]\s*Answer\s*:.*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'\bAnswer\s*:.*$',      '', text, flags=re.IGNORECASE | re.DOTALL)
+    # Remove [CORRECT] tags
+    text = re.sub(r'\[CORRECT\]', '', text, flags=re.IGNORECASE)
+    # Remove trailing explanation
+    text = re.sub(r'\bExplanation\s*:.*$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    # Collapse whitespace
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _extract_options(block: str) -> list[tuple[str, str]]:
+    """
+    Try multiple strategies to extract (letter, text) option pairs from a block.
+
+    Strategy 1 — each option on its own line:
+        (a) Andhra Pradesh
+        (b) Jharkhand
+
+    Strategy 2 — all options inline on one line (common after pypdf extraction):
+        (a) Andhra Pradesh (b) Jharkhand (c) Chhattisgarh (d) West Bengal
+
+    Strategy 3 — capital letter format on its own line:
+        A) Andhra Pradesh
+        B) Jharkhand
+
+    Strategy 4 — capital letter inline:
+        A) Andhra Pradesh B) Jharkhand C) Chhattisgarh D) West Bengal
+    """
+
+    # ── Strategy 1: lowercase paren options, one per line ────────────────────
+    paren_opts = re.findall(r'^\s*\(([a-d])\)\s*(.+?)$', block,
+                            re.MULTILINE | re.IGNORECASE)
+    if len(paren_opts) >= 2:
+        return [(l.lower(), _clean_option_text(t)) for l, t in paren_opts]
+
+    # ── Strategy 2: ALL four options inline with (a)...(b)...(c)...(d) ──────
+    # Captures everything between consecutive option markers
+    inline_m = re.search(
+        r'\(a\)\s*(.+?)\s*\(b\)\s*(.+?)\s*\(c\)\s*(.+?)\s*\(d\)\s*(.+?)(?=\s*[✓√]|\s*\bAnswer\b|\s*\bExplanation\b|\s*$)',
+        block, re.IGNORECASE | re.DOTALL
+    )
+    if inline_m:
+        return [
+            ('a', _clean_option_text(inline_m.group(1))),
+            ('b', _clean_option_text(inline_m.group(2))),
+            ('c', _clean_option_text(inline_m.group(3))),
+            ('d', _clean_option_text(inline_m.group(4))),
+        ]
+
+    # ── Strategy 3: capital letter options, one per line ─────────────────────
+    cap_opts = re.findall(r'^\s*([A-D])[\.\)]\s*(.+?)$', block,
+                          re.MULTILINE | re.IGNORECASE)
+    if len(cap_opts) >= 2:
+        return [(l.lower(), _clean_option_text(t)) for l, t in cap_opts]
+
+    # ── Strategy 4: capital letter options inline ─────────────────────────────
+    cap_inline = re.search(
+        r'[A-D]\)\s*.+',
+        block, re.IGNORECASE
+    )
+    if cap_inline:
+        found = re.findall(
+            r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*[✓√]|\s*\bAnswer\b|\s*$)',
+            cap_inline.group(), re.IGNORECASE
+        )
+        if len(found) >= 2:
+            return [(l.lower(), _clean_option_text(t)) for l, t in found]
+
+    return []
+
+
 def _parse_question_bank(text: str, num_questions: int, time_limit: int,
                           exam_title: Optional[str]) -> dict:
     """
     Parse a pre-formatted question bank directly into ExamVerse format.
-    Handles:
-      Format A  (a)/(b)/(c)/(d) options + ✓ Answer: (x) + Explanation
-      Format B  A)/B)/C)/D)     options + [CORRECT] or Answer: (X)
+
+    Handles all common PDF-extracted layouts:
+      • Options on separate lines: (a) Text\\n(b) Text\\n...
+      • Options all on one line:   (a) Text (b) Text (c) Text (d) Text
+      • Capital letter variants:   A) Text  B) Text  ...
+      • Answer markers:            ✓ Answer: (b)  /  Answer: (b)  /  [CORRECT]
     """
     questions = []
 
-    # Split on lines that start a new question: "1." or "Q1." etc.
-    blocks = re.split(r'(?m)(?=^\s*(?:Q\s*)?\d+[\.\)]\s+\S)', text)
+    # ── Split into per-question blocks ────────────────────────────────────────
+    # Matches "1." / "1)" / "Q1." / "Q.1" etc. at the start of a line
+    blocks = re.split(r'(?m)(?=^\s*(?:Q[\s\.]*)?\d{1,3}[\.\)]\s)', text)
 
     for block in blocks:
         block = block.strip()
         if len(block) < 15:
             continue
 
-        # ── Extract question number + text ────────────────────────────────────
-        m = re.match(r'^(?:Q\s*)?(\d+)[\.\)]\s*(.+?)(?=\n\s*[\(\[A-Da-d]|\Z)',
-                     block, re.DOTALL)
-        if not m:
+        # ── Extract question number ───────────────────────────────────────────
+        num_match = re.match(r'^(?:Q[\s\.]*)?\d{1,3}[\.\)]\s*', block)
+        if not num_match:
             continue
 
-        q_text = re.sub(r'\s+', ' ', m.group(2)).strip()
-        # Strip any answer/explanation that leaked into the question text
+        # ── Extract question text ─────────────────────────────────────────────
+        # Everything after the question number, up to the first option marker
+        # Option markers: "(a)", "A)", "A.", or a tick/answer line
+        after_num = block[num_match.end():]
+
+        # Try to find where the options begin
+        option_start = re.search(
+            r'\n\s*[\(\[]?[aAbBcCdD][\.\)\]]\s*\S'   # newline + option
+            r'|\s*\(a\)\s*\S',                         # OR inline (a) right after question
+            after_num
+        )
+
+        if option_start:
+            q_text_raw = after_num[:option_start.start()]
+        else:
+            # No clear split — take first line as question text
+            first_line_end = after_num.find('\n')
+            q_text_raw = after_num[:first_line_end] if first_line_end > 0 else after_num[:200]
+
+        q_text = re.sub(r'\s+', ' ', q_text_raw).strip()
+
+        # Clean any answer/explanation that leaked into question text
         q_text = re.sub(r'\s*[✓√]\s*Answer\s*:.*$', '', q_text,
-                        flags=re.IGNORECASE | re.MULTILINE).strip()
-        q_text = re.sub(r'\s*Explanation\s*:.*$', '', q_text,
-                        flags=re.IGNORECASE | re.MULTILINE).strip()
+                        flags=re.IGNORECASE | re.DOTALL).strip()
+        q_text = re.sub(r'\s*\bAnswer\s*:.*$', '', q_text,
+                        flags=re.IGNORECASE | re.DOTALL).strip()
+        q_text = re.sub(r'\s*\bExplanation\s*:.*$', '', q_text,
+                        flags=re.IGNORECASE | re.DOTALL).strip()
+        # Remove trailing option text that got swept in (e.g. "(a) Option1...")
+        q_text = re.sub(r'\s*\(a\)\s*.*$', '', q_text,
+                        flags=re.IGNORECASE | re.DOTALL).strip()
+
         if not q_text or len(q_text) < 4:
             continue
 
         # ── Extract options ───────────────────────────────────────────────────
-        # Format A: (a) text  (each on its own line)
-        paren_opts = re.findall(r'^\s*\(([a-d])\)\s*(.+?)$', block,
-                                re.MULTILINE | re.IGNORECASE)
-        # Format B: A) text or A. text  (each on its own line)
-        cap_opts   = re.findall(r'^\s*([A-D])[\.\)]\s*(.+?)$', block,
-                                re.MULTILINE | re.IGNORECASE) if not paren_opts else []
-        # Format B inline: "A) opt1  B) opt2  C) opt3  D) opt4"
-        if not paren_opts and not cap_opts:
-            inline = re.search(r'[A-D]\)\s*.+', block, re.IGNORECASE)
-            if inline:
-                cap_opts = re.findall(r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*$)',
-                                      inline.group(), re.IGNORECASE)
-
-        raw_opts = paren_opts if paren_opts else cap_opts
+        raw_opts = _extract_options(block)
         if not raw_opts:
             continue
 
         # ── Find correct answer letter ────────────────────────────────────────
         correct_letter = None
 
-        # ✓ Answer: (b) or Answer: (b)
+        # Pattern: ✓ Answer: (b) or Answer: (b) Rice  — capture the letter
         m_ans = re.search(r'[✓√]?\s*Answer\s*:\s*\(?([a-d])\)?', block, re.IGNORECASE)
         if m_ans:
             correct_letter = m_ans.group(1).lower()
 
-        # [CORRECT] next to an option letter
+        # Pattern: [CORRECT] next to an option
         if not correct_letter:
             m_corr = re.search(r'([A-Da-d])[\.\)][^\n]*\[CORRECT\]', block, re.IGNORECASE)
             if m_corr:
@@ -161,26 +255,34 @@ def _parse_question_bank(text: str, num_questions: int, time_limit: int,
         m_expl = re.search(r'Explanation\s*:\s*(.+?)(?=\n\s*\n|\Z)', block,
                            re.DOTALL | re.IGNORECASE)
         if m_expl:
-            explanation = re.sub(r'\s+', ' ', m_expl.group(1)).strip()[:400]
+            explanation = re.sub(r'\s+', ' ', m_expl.group(1)).strip()[:500]
 
         # ── Build option list ─────────────────────────────────────────────────
         options = []
         for letter, opt_text in raw_opts:
-            opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE)
-            opt_text = re.sub(r'[✓√]\s*Answer.*$', '', opt_text, flags=re.IGNORECASE)
-            opt_text = re.sub(r'Explanation.*$', '', opt_text, flags=re.IGNORECASE)
-            opt_text = re.sub(r'\s+', ' ', opt_text).strip()
             if not opt_text:
                 continue
-            is_correct = (letter.lower() == correct_letter) if correct_letter else False
+            is_correct = (letter == correct_letter) if correct_letter else False
             options.append({"text": opt_text, "is_correct": is_correct})
 
         if not options:
             continue
 
-        # Ensure exactly one correct answer
-        if not any(o["is_correct"] for o in options):
+        # Ensure exactly one correct option
+        correct_count = sum(1 for o in options if o["is_correct"])
+        if correct_count == 0:
+            # Last resort: nothing matched — mark first option correct and log
+            logger.warning("No correct answer found for Q: %s... — defaulting to first option", q_text[:60])
             options[0]["is_correct"] = True
+        elif correct_count > 1:
+            # Multiple marked — keep only the first one
+            first_seen = False
+            for o in options:
+                if o["is_correct"]:
+                    if first_seen:
+                        o["is_correct"] = False
+                    else:
+                        first_seen = True
 
         questions.append({
             "text":          q_text,
@@ -194,36 +296,59 @@ def _parse_question_bank(text: str, num_questions: int, time_limit: int,
             break
 
     if not questions:
-        raise ValueError("Could not parse any questions from question bank.")
+        raise ValueError(
+            "Could not parse any questions from the uploaded file. "
+            "Please check the file format and try again."
+        )
 
-    logger.info("QB parser extracted %d questions", len(questions))
+    logger.info("QB parser extracted %d / %d requested questions", len(questions), num_questions)
 
+    # ── Auto-detect title from file if not provided ───────────────────────────
     if not exam_title:
         for line in text.splitlines():
             line = line.strip()
-            if line and not re.match(r'^\d+[\.\)]', line) and 5 < len(line) < 100:
+            # Skip lines that look like question numbers or short fragments
+            if line and not re.match(r'^\d+[\.\)]', line) and 8 < len(line) < 120:
                 exam_title = line
                 break
-        exam_title = exam_title or "Question Bank"
+        exam_title = exam_title or "Question Bank Exam"
 
     total = len(questions)
+    duration = time_limit if time_limit else max(30, total * 1)
+
+    # ── Group questions into subject-based sections (every 5 questions) ───────
+    # For large banks, grouping into sections makes navigation easier
+    SECTION_SIZE = 10
+    sections = []
+    for i in range(0, total, SECTION_SIZE):
+        chunk = questions[i:i + SECTION_SIZE]
+        sec_num = (i // SECTION_SIZE) + 1
+        sections.append({
+            "title":       f"Section {sec_num}",
+            "description": "",
+            "questions":   chunk,
+        })
+
     return {
         "title":            exam_title,
-        "description":      f"Imported directly from question bank — {total} questions.",
-        "duration_minutes": time_limit if time_limit else total * 1,
-        "total_marks":      total,
+        "description":      f"Imported from question bank — {total} questions.",
+        "duration_minutes": duration,
+        "total_marks":      float(total),
         "pass_percentage":  40,
         "negative_marking": False,
-        "sections":         [{"title": "Section 1", "description": "", "questions": questions}],
+        "sections":         sections,
         "coverage_report": {
             "total_topics_in_syllabus": total,
             "topics_covered":           total,
             "topics_missing":           0,
             "coverage_percentage":      100,
             "total_questions":          total,
-            "question_distribution":    {"by_type": {"mcq_single": total}, "by_difficulty": {}},
-            "weak_areas":               [],
-            "source":                   "question_bank_parser",
+            "question_distribution":    {
+                "by_type":       {"mcq_single": total},
+                "by_difficulty": {},
+            },
+            "weak_areas": [],
+            "source":     "question_bank_parser",
         },
     }
 
@@ -285,6 +410,8 @@ def _build_prompt(content, num_questions, difficulty, question_types,
         "short":      f"All {num_questions} must be short_answer (empty options array).",
         "mixed":      f"Mix: ~60% mcq_single, ~20% true_false, ~20% short_answer.",
     }
+    # Limit content to 7000 chars to stay within Gemini context safely
+    content_trimmed = content[:7000]
     return textwrap.dedent(f"""
 You are an expert exam setter. Generate exactly {num_questions} questions from the content below.
 Difficulty: {difficulty}. {type_map.get(question_types, type_map['mixed'])}
@@ -324,7 +451,7 @@ JSON FORMAT:
 
 CONTENT:
 ---
-{content[:7000]}
+{content_trimmed}
 ---
 Return ONLY the JSON object.
 """).strip()
@@ -404,7 +531,6 @@ def _extract_facts(text: str) -> list[dict]:
              for s in re.split(r'(?<=[.!?])\s+|\n', text) if len(s.strip()) > 25]
     facts, seen = [], set()
     for sent in sents:
-        # Pattern 1: "X is/are Y"
         m = re.match(
             r'^(.{5,60}?)\s+(?:is|are|was|were)\s+(?:the\s+)?(.{3,60})$',
             sent, re.IGNORECASE
@@ -422,7 +548,6 @@ def _extract_facts(text: str) -> list[dict]:
                     facts.append({"sentence": sent, "subject": m.group(1).strip(),
                                   "answer": ans, "style": "is"})
                 continue
-        # Pattern 2: numbers
         for num, unit in re.findall(r'\b(\d+(?:\.\d+)?)\s*(years?|km|m|BCE|CE|%|kg)?\b', sent):
             ans = f"{num} {unit}".strip() if unit else num
             if ans not in seen and int(float(num)) > 0:
@@ -574,8 +699,8 @@ async def generate_exam_from_syllabus(
         prompt = _build_prompt(syllabus_text, num_questions, difficulty,
                                question_types, time_limit, exam_title, focus_topics)
         try:
-            raw  = await _call_gemini(prompt)
-            data = _extract_json(raw)
+            raw    = await _call_gemini(prompt)
+            data   = _extract_json(raw)
             result = _normalise(data, num_questions, time_limit)
             logger.info("Gemini generated %d questions",
                         sum(len(s["questions"]) for s in result["sections"]))
