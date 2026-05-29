@@ -95,10 +95,6 @@ async function extractTextFromPDF(file) {
 export default function SyllabusUpload() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
-// ══════════════════════════════════════════════════════════════════════════════
-export default function SyllabusUpload() {
-  const navigate = useNavigate();
-  const fileInputRef = useRef(null);
 
   const [file, setFile] = useState(null);
   const [syllabusText, setSyllabusText] = useState("");
@@ -215,7 +211,6 @@ export default function SyllabusUpload() {
         formData.append("time_limit",     config.time_limit);
         if (config.exam_title)   formData.append("exam_title",   config.exam_title);
         if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
-if (config.focus_topics) formData.append("focus_topics", config.focus_topics);
         const res = await api.post("/api/syllabus/upload-and-generate", formData, {
           headers: { "Content-Type": "multipart/form-data" },
           timeout: 180000,
