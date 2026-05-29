@@ -552,6 +552,196 @@ def _fallback_generate(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Pre-formatted question bank parser
+# Handles PDFs that already contain MCQs with [CORRECT] / Answer: (X) markers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _is_question_bank(text: str) -> bool:
+    """Return True if the text looks like a pre-formatted MCQ question bank."""
+    correct_markers = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
+    answer_markers  = len(re.findall(r'Answer\s*:\s*\([A-Da-d]\)', text))
+    q_markers       = len(re.findall(r'\bQ\s*\d+[\.\)]', text))
+    abcd_options    = len(re.findall(r'^[A-D]\)', text, re.MULTILINE))
+    score = (correct_markers * 3) + (answer_markers * 3) + (q_markers * 2) + abcd_options
+    logger.info("Question bank score: %d (correct=%d answer=%d q=%d abcd=%d)",
+                score, correct_markers, answer_markers, q_markers, abcd_options)
+    return score >= 10
+
+
+def _parse_question_bank(
+    text: str,
+    num_questions: int,
+    time_limit: int,
+    exam_title: Optional[str],
+) -> dict:
+    """
+    Parse a pre-formatted MCQ question bank PDF into ExamVerse format.
+
+    Handles multiple common formats:
+      Format A:  Q1. Question text?
+                 A) Option  B) Option  C) Option [CORRECT]  D) Option
+                 Answer: (C)
+
+      Format B:  1. Question text
+                 A. Option
+                 B. Option
+                 C. Option
+                 D. Option
+                 Answer: B
+
+      Format C:  mixed inline like "A) Mahanadi B) ... C) Baitarani [CORRECT] D) ..."
+    """
+    questions = []
+
+    # ── Split into question blocks ────────────────────────────────────────────
+    # Split on Q<n>. or standalone <n>. at start of line
+    blocks = re.split(r'\n(?=(?:Q\s*)?\d+[\.\)]\s)', text)
+
+    for block in blocks:
+        block = block.strip()
+        if len(block) < 10:
+            continue
+
+        # ── Extract question number + text ────────────────────────────────────
+        m_head = re.match(r'^(?:Q\s*)?(\d+)[\.\)]\s*(.+?)(?=\n[A-Da-d][\.\)]|\Z)',
+                          block, re.DOTALL | re.IGNORECASE)
+        if not m_head:
+            continue
+
+        q_text_raw = m_head.group(2).strip()
+
+        # Clean up question text — remove embedded option lines that got merged
+        # e.g. "Which river? A) Mahanadi B) Rushikulya C) Baitarani [CORRECT] D) Brahmani"
+        # Detect inline options: "A) opt1  B) opt2  C) opt3 [CORRECT]  D) opt4"
+        inline_opts = re.findall(r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*$)',
+                                  q_text_raw, re.IGNORECASE)
+        correct_inline = None
+        if inline_opts:
+            correct_m = re.search(r'([A-D])\)\s*[^\n]*\[CORRECT\]',
+                                  q_text_raw, re.IGNORECASE)
+            if correct_m:
+                correct_inline = correct_m.group(1).upper()
+            # Strip options from question text
+            q_text_raw = re.split(r'\s{2,}[A-D]\)|(?<![A-Z])\s+A\)', q_text_raw)[0].strip()
+
+        # Also strip "Answer: (X)" from question text
+        q_text_raw = re.sub(r'\s*Answer\s*:\s*\([A-Da-d]\)\s*$', '', q_text_raw,
+                            flags=re.IGNORECASE).strip()
+        # Strip trailing format metadata lines
+        q_text_raw = re.sub(
+            r'(Format:.*|SECTION\s+\d+.*|ExamVerse.*)', '', q_text_raw,
+            flags=re.IGNORECASE
+        ).strip()
+
+        if not q_text_raw or len(q_text_raw) < 5:
+            continue
+
+        # ── Extract options from next lines ───────────────────────────────────
+        # Extract options — handles both multi-line and inline formats
+        # First try multi-line (each option on its own line)
+        option_lines = re.findall(
+            r'^([A-D])[\.\)]\ *(.+?)$',
+            block, re.MULTILINE | re.IGNORECASE
+        )
+        # If only 1 "option" found, the options are inline on one line — re-split
+        if len(option_lines) <= 1:
+            inline_line = re.search(r'^[A-D][\.\)].+', block, re.MULTILINE | re.IGNORECASE)
+            if inline_line:
+                option_lines = re.findall(
+                    r'([A-D])\)\ *(.*?)(?=\ +[A-D]\)|\ *$)',
+                    inline_line.group(), re.IGNORECASE
+                )
+
+
+        # Determine correct answer letter
+        # Priority 1: Answer: (X)
+        ans_m = re.search(r'Answer\s*:\s*\(?([A-Da-d])\)?', block, re.IGNORECASE)
+        correct_letter = ans_m.group(1).upper() if ans_m else None
+
+        # Priority 2: inline [CORRECT] tag
+        if not correct_letter and correct_inline:
+            correct_letter = correct_inline
+
+        # Priority 3: [CORRECT] next to an option line
+        if not correct_letter:
+            correct_m2 = re.search(r'([A-D])[\.\)][^\n]*\[CORRECT\]', block, re.IGNORECASE)
+            if correct_m2:
+                correct_letter = correct_m2.group(1).upper()
+
+        # Build options
+        options = []
+        if option_lines:
+            for letter, opt_text in option_lines:
+                opt_text = opt_text.strip()
+                opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE).strip()
+                opt_text = re.sub(r'\s+', ' ', opt_text).strip()
+                if not opt_text:
+                    continue
+                is_correct = (letter.upper() == correct_letter) if correct_letter \
+                             else ("[CORRECT]" in opt_text)
+                options.append({"text": opt_text, "is_correct": is_correct})
+        elif inline_opts:
+            # inline_opts is list of (letter, text) tuples
+            for letter, opt_text in inline_opts:
+                opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE).strip()
+                opt_text = re.sub(r'\s+', ' ', opt_text).strip()
+                if not opt_text:
+                    continue
+                is_correct = (letter.upper() == correct_letter) if correct_letter                              else ("[CORRECT]" in opt_text)
+                options.append({"text": opt_text, "is_correct": is_correct})
+
+        # Skip if no usable options
+        if not options:
+            continue
+
+        # Ensure exactly one correct answer
+        if not any(o["is_correct"] for o in options):
+            options[0]["is_correct"] = True
+
+        questions.append({
+            "text":          q_text_raw,
+            "question_type": "mcq_single",
+            "marks":         1,
+            "explanation":   f"Answer: ({correct_letter})" if correct_letter else "",
+            "options":       options,
+        })
+
+        if len(questions) >= num_questions:
+            break
+
+    if not questions:
+        raise ValueError("Could not parse any questions from the question bank PDF.")
+
+    logger.info("Question bank parser: extracted %d questions", len(questions))
+
+    # Infer title from first meaningful line if not provided
+    if not exam_title:
+        first_line = text.strip().splitlines()[0][:80].strip()
+        exam_title = first_line if len(first_line) > 5 else "Question Bank Exam"
+
+    total = len(questions)
+    return {
+        "title":            exam_title,
+        "description":      f"Imported from question bank — {total} MCQ questions.",
+        "duration_minutes": time_limit,
+        "total_marks":      total,
+        "pass_percentage":  40,
+        "negative_marking": False,
+        "sections": [{"title": "Section 1", "description": "", "questions": questions}],
+        "coverage_report": {
+            "total_topics_in_syllabus": total,
+            "topics_covered":           total,
+            "topics_missing":           0,
+            "coverage_percentage":      100,
+            "total_questions":          total,
+            "question_distribution":    {"by_type": {"mcq_single": total}, "by_difficulty": {}},
+            "weak_areas":               [],
+            "source":                   "question_bank_parser",
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Public API
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -564,8 +754,17 @@ async def generate_exam_from_syllabus(
     exam_title:     Optional[str] = None,
     focus_topics:   Optional[str] = None,
 ) -> dict:
+    # Step 1: detect pre-formatted question bank -- parse directly
+    if _is_question_bank(syllabus_text):
+        logger.info("Detected pre-formatted question bank -- parsing directly")
+        try:
+            return _parse_question_bank(syllabus_text, num_questions, time_limit, exam_title)
+        except Exception as exc:
+            logger.warning("Question bank parser failed (%s) -- continuing to AI", exc)
+
+    # Step 2: AI / fallback generation
     if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY not set — using fallback generator")
+        logger.warning("GEMINI_API_KEY not set -- using fallback generator")
         return _fallback_generate(syllabus_text, num_questions, difficulty,
                                   question_types, time_limit, exam_title)
     prompt = _build_prompt(syllabus_text, num_questions, difficulty, question_types,
@@ -578,7 +777,7 @@ async def generate_exam_from_syllabus(
                     sum(len(s["questions"]) for s in result["sections"]))
         return result
     except Exception as exc:
-        logger.error("Gemini failed (%s) — falling back to rule-based generator", exc)
+        logger.error("Gemini failed (%s) -- falling back to rule-based generator", exc)
         return _fallback_generate(syllabus_text, num_questions, difficulty,
                                   question_types, time_limit, exam_title)
 
