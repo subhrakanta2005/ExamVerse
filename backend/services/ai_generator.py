@@ -292,7 +292,7 @@ def _parse_question_bank(text: str, num_questions: int, time_limit: int,
             "options":       options,
         })
 
-        
+        # No cap — import all questions from the bank
 
     if not questions:
         raise ValueError(
@@ -300,7 +300,7 @@ def _parse_question_bank(text: str, num_questions: int, time_limit: int,
             "Please check the file format and try again."
         )
 
-    logger.info("QB parser extracted %d / %d requested questions", len(questions), num_questions)
+    logger.info("QB parser extracted %d questions from bank (requested %d)", len(questions), num_questions)
 
     # ── Auto-detect title from file if not provided ───────────────────────────
     if not exam_title:
