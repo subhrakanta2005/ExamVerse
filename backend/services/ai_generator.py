@@ -292,8 +292,7 @@ def _parse_question_bank(text: str, num_questions: int, time_limit: int,
             "options":       options,
         })
 
-        if len(questions) >= num_questions:
-            break
+        
 
     if not questions:
         raise ValueError(
