@@ -558,151 +558,133 @@ def _fallback_generate(
 
 def _is_question_bank(text: str) -> bool:
     """Return True if the text looks like a pre-formatted MCQ question bank."""
-    correct_markers = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
-    answer_markers  = len(re.findall(r'Answer\s*:\s*\([A-Da-d]\)', text))
-    q_markers       = len(re.findall(r'\bQ\s*\d+[\.\)]', text))
-    abcd_options    = len(re.findall(r'^[A-D]\)', text, re.MULTILINE))
-    score = (correct_markers * 3) + (answer_markers * 3) + (q_markers * 2) + abcd_options
-    logger.info("Question bank score: %d (correct=%d answer=%d q=%d abcd=%d)",
-                score, correct_markers, answer_markers, q_markers, abcd_options)
-    return score >= 10
+    # Format A: (a)/(b)/(c)/(d) options + Answer: (x) or checkmark Answer
+    paren_opts    = len(re.findall(r'^\([a-d]\)\s*\S', text, re.MULTILINE))
+    tick_answer   = len(re.findall(r'[✓√]\s*Answer\s*:', text))
+    answer_paren  = len(re.findall(r'Answer\s*:\s*\([a-d]\)', text, re.IGNORECASE))
+    # Format B: A)/B)/C)/D) options + [CORRECT] or Answer: (X)
+    cap_opts      = len(re.findall(r'^[A-D][\.\)]\s*\S', text, re.MULTILINE))
+    correct_marks = len(re.findall(r'\[CORRECT\]', text, re.IGNORECASE))
+    q_markers     = len(re.findall(r'^\d+[\.\ )]\s*\S', text, re.MULTILINE))
+
+    score = (paren_opts * 2) + (tick_answer * 4) + (answer_paren * 3) + \
+            (cap_opts * 2) + (correct_marks * 3) + (q_markers * 2)
+    logger.info("QB score=%d (paren=%d tick=%d ans=%d cap=%d corr=%d q=%d)",
+                score, paren_opts, tick_answer, answer_paren, cap_opts, correct_marks, q_markers)
+    return score >= 12
 
 
 def _parse_question_bank(
     text: str,
     num_questions: int,
     time_limit: int,
-    exam_title: Optional[str],
+    exam_title: str | None,
 ) -> dict:
     """
-    Parse a pre-formatted MCQ question bank PDF into ExamVerse format.
+    Parse pre-formatted MCQ question bank PDFs into ExamVerse format.
+    Handles two common formats:
 
-    Handles multiple common formats:
-      Format A:  Q1. Question text?
-                 A) Option  B) Option  C) Option [CORRECT]  D) Option
-                 Answer: (C)
+      Format A (this PDF):
+        1. Question text?
+        (a) Option one
+        (b) Option two
+        (c) Option three
+        (d) Option four
+        ✓ Answer: (b) Option two
+        Explanation: ...
 
-      Format B:  1. Question text
-                 A. Option
-                 B. Option
-                 C. Option
-                 D. Option
-                 Answer: B
-
-      Format C:  mixed inline like "A) Mahanadi B) ... C) Baitarani [CORRECT] D) ..."
+      Format B (older PDFs):
+        Q1. Question text?
+        A) Option  B) Option  C) Option [CORRECT]  D) Option
+        Answer: (C)
     """
     questions = []
 
-    # ── Split into question blocks ────────────────────────────────────────────
-    # Split on Q<n>. or standalone <n>. at start of line
-    blocks = re.split(r'\n(?=(?:Q\s*)?\d+[\.\)]\s)', text)
+    # ── Split into question blocks on a line starting with a number + dot/paren
+    blocks = re.split(r'(?m)(?=^\d+[\.\ )]\s+\S)', text)
 
     for block in blocks:
         block = block.strip()
-        if len(block) < 10:
+        if not block or len(block) < 15:
             continue
 
-        # ── Extract question number + text ────────────────────────────────────
-        m_head = re.match(r'^(?:Q\s*)?(\d+)[\.\)]\s*(.+?)(?=\n[A-Da-d][\.\)]|\Z)',
-                          block, re.DOTALL | re.IGNORECASE)
+        # ── Extract question number and text ─────────────────────────────────
+        m_head = re.match(
+            r'^(\d+)[\.\ )]\s*(.+?)(?=\n\s*[\(\[A-Da-d]|\Z)',
+            block, re.DOTALL
+        )
         if not m_head:
             continue
 
-        q_text_raw = m_head.group(2).strip()
-
-        # Clean up question text — remove embedded option lines that got merged
-        # e.g. "Which river? A) Mahanadi B) Rushikulya C) Baitarani [CORRECT] D) Brahmani"
-        # Detect inline options: "A) opt1  B) opt2  C) opt3 [CORRECT]  D) opt4"
-        inline_opts = re.findall(r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*$)',
-                                  q_text_raw, re.IGNORECASE)
-        correct_inline = None
-        if inline_opts:
-            correct_m = re.search(r'([A-D])\)\s*[^\n]*\[CORRECT\]',
-                                  q_text_raw, re.IGNORECASE)
-            if correct_m:
-                correct_inline = correct_m.group(1).upper()
-            # Strip options from question text
-            q_text_raw = re.split(r'\s{2,}[A-D]\)|(?<![A-Z])\s+A\)', q_text_raw)[0].strip()
-
-        # Also strip "Answer: (X)" from question text
-        q_text_raw = re.sub(r'\s*Answer\s*:\s*\([A-Da-d]\)\s*$', '', q_text_raw,
-                            flags=re.IGNORECASE).strip()
-        # Strip trailing format metadata lines
-        q_text_raw = re.sub(
-            r'(Format:.*|SECTION\s+\d+.*|ExamVerse.*)', '', q_text_raw,
-            flags=re.IGNORECASE
-        ).strip()
-
-        if not q_text_raw or len(q_text_raw) < 5:
+        q_text = re.sub(r'\s+', ' ', m_head.group(2)).strip()
+        # Remove stray answer keys embedded in q_text
+        q_text = re.sub(r'[✓√]\s*Answer\s*:.*$', '', q_text, flags=re.IGNORECASE|re.MULTILINE).strip()
+        q_text = re.sub(r'Explanation\s*:.*$', '', q_text, flags=re.IGNORECASE|re.MULTILINE).strip()
+        if not q_text or len(q_text) < 4:
             continue
 
-        # ── Extract options from next lines ───────────────────────────────────
-        # Extract options — handles both multi-line and inline formats
-        # First try multi-line (each option on its own line)
-        option_lines = re.findall(
-            r'^([A-D])[\.\)]\ *(.+?)$',
-            block, re.MULTILINE | re.IGNORECASE
-        )
-        # If only 1 "option" found, the options are inline on one line — re-split
-        if len(option_lines) <= 1:
-            inline_line = re.search(r'^[A-D][\.\)].+', block, re.MULTILINE | re.IGNORECASE)
-            if inline_line:
-                option_lines = re.findall(
-                    r'([A-D])\)\ *(.*?)(?=\ +[A-D]\)|\ *$)',
-                    inline_line.group(), re.IGNORECASE
-                )
+        # ── Format A: (a)/(b)/(c)/(d) options ────────────────────────────────
+        paren_opts = re.findall(r'^\(([a-d])\)\s*(.+?)$', block, re.MULTILINE | re.IGNORECASE)
 
+        # ── Format B: A)/B)/C)/D) options (multi-line or inline) ──────────────
+        cap_opts = re.findall(r'^([A-D])[\.\ )]\s*(.+?)$', block, re.MULTILINE | re.IGNORECASE)
 
-        # Determine correct answer letter
-        # Priority 1: Answer: (X)
-        ans_m = re.search(r'Answer\s*:\s*\(?([A-Da-d])\)?', block, re.IGNORECASE)
-        correct_letter = ans_m.group(1).upper() if ans_m else None
+        # ── Inline format B: "A) opt  B) opt  C) opt [CORRECT]  D) opt" ──────
+        if not cap_opts and not paren_opts:
+            inline = re.search(r'^[A-D][\.\ )].*', block, re.MULTILINE | re.IGNORECASE)
+            if inline:
+                cap_opts = re.findall(r'([A-D])\)\s*(.*?)(?=\s+[A-D]\)|\s*$)',
+                                      inline.group(), re.IGNORECASE)
 
-        # Priority 2: inline [CORRECT] tag
-        if not correct_letter and correct_inline:
-            correct_letter = correct_inline
+        raw_opts = paren_opts if paren_opts else cap_opts
 
-        # Priority 3: [CORRECT] next to an option line
+        if not raw_opts:
+            continue
+
+        # ── Determine correct answer letter ───────────────────────────────────
+        # Priority 1: ✓ Answer: (b) or Answer: (b)
+        correct_letter = None
+        m_ans = re.search(r'[✓√]?\s*Answer\s*:\s*\(?([a-d])\)?', block, re.IGNORECASE)
+        if m_ans:
+            correct_letter = m_ans.group(1).lower()
+
+        # Priority 2: [CORRECT] tag next to an option
         if not correct_letter:
-            correct_m2 = re.search(r'([A-D])[\.\)][^\n]*\[CORRECT\]', block, re.IGNORECASE)
-            if correct_m2:
-                correct_letter = correct_m2.group(1).upper()
+            m_corr = re.search(r'([A-Da-d])[\.\ )]\s*[^\n]*\[CORRECT\]', block, re.IGNORECASE)
+            if m_corr:
+                correct_letter = m_corr.group(1).lower()
 
-        # Build options
+        # ── Build clean option list ───────────────────────────────────────────
+        explanation = ""
+        m_expl = re.search(r'Explanation\s*:\s*(.+?)(?=\n\n|\Z)', block,
+                           re.DOTALL | re.IGNORECASE)
+        if m_expl:
+            explanation = re.sub(r'\s+', ' ', m_expl.group(1)).strip()[:300]
+
         options = []
-        if option_lines:
-            for letter, opt_text in option_lines:
-                opt_text = opt_text.strip()
-                opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE).strip()
-                opt_text = re.sub(r'\s+', ' ', opt_text).strip()
-                if not opt_text:
-                    continue
-                is_correct = (letter.upper() == correct_letter) if correct_letter \
-                             else ("[CORRECT]" in opt_text)
-                options.append({"text": opt_text, "is_correct": is_correct})
-        elif inline_opts:
-            # inline_opts is list of (letter, text) tuples
-            for letter, opt_text in inline_opts:
-                opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE).strip()
-                opt_text = re.sub(r'\s+', ' ', opt_text).strip()
-                if not opt_text:
-                    continue
-                is_correct = (letter.upper() == correct_letter) if correct_letter                              else ("[CORRECT]" in opt_text)
-                options.append({"text": opt_text, "is_correct": is_correct})
+        for letter, opt_text in raw_opts:
+            opt_text = re.sub(r'\[CORRECT\]', '', opt_text, flags=re.IGNORECASE)
+            # Strip explanation that leaked into option text
+            opt_text = re.sub(r'[✓√]\s*Answer.*$', '', opt_text, flags=re.IGNORECASE).strip()
+            opt_text = re.sub(r'Explanation.*$', '', opt_text, flags=re.IGNORECASE).strip()
+            opt_text = re.sub(r'\s+', ' ', opt_text).strip()
+            if not opt_text:
+                continue
+            is_correct = (letter.lower() == correct_letter) if correct_letter else False
+            options.append({"text": opt_text, "is_correct": is_correct})
 
-        # Skip if no usable options
         if not options:
             continue
 
-        # Ensure exactly one correct answer
+        # Fallback: mark first as correct if none marked
         if not any(o["is_correct"] for o in options):
             options[0]["is_correct"] = True
 
         questions.append({
-            "text":          q_text_raw,
+            "text":          q_text,
             "question_type": "mcq_single",
             "marks":         1,
-            "explanation":   f"Answer: ({correct_letter})" if correct_letter else "",
+            "explanation":   explanation,
             "options":       options,
         })
 
@@ -712,12 +694,16 @@ def _parse_question_bank(
     if not questions:
         raise ValueError("Could not parse any questions from the question bank PDF.")
 
-    logger.info("Question bank parser: extracted %d questions", len(questions))
+    logger.info("QB parser: extracted %d / %d questions", len(questions), num_questions)
 
-    # Infer title from first meaningful line if not provided
     if not exam_title:
-        first_line = text.strip().splitlines()[0][:80].strip()
-        exam_title = first_line if len(first_line) > 5 else "Question Bank Exam"
+        # Use first meaningful non-question line as title
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not re.match(r'^\d+[\.\ )]', line) and len(line) > 10:
+                exam_title = line[:80]
+                break
+        exam_title = exam_title or "Question Bank Exam"
 
     total = len(questions)
     return {
@@ -727,7 +713,7 @@ def _parse_question_bank(
         "total_marks":      total,
         "pass_percentage":  40,
         "negative_marking": False,
-        "sections": [{"title": "Section 1", "description": "", "questions": questions}],
+        "sections":         [{"title": "Section 1", "description": "", "questions": questions}],
         "coverage_report": {
             "total_topics_in_syllabus": total,
             "topics_covered":           total,
@@ -739,6 +725,7 @@ def _parse_question_bank(
             "source":                   "question_bank_parser",
         },
     }
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
