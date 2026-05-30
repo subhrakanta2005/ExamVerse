@@ -1,18 +1,17 @@
 """
 backend/routers/auth.py
 
-Rate limiting is provided by slowapi (wraps limits library).
-Add to requirements.txt:  slowapi==0.1.9
-
-If slowapi is not installed, the app still starts — the limiter is applied
-only when the dependency is present. To disable rate limiting entirely, set
-DISABLE_RATE_LIMIT=true in your environment.
+Rate limiting: simple in-process sliding-window limiter (no extra dependencies).
+For multi-worker / multi-instance deployments, replace _RateLimiter with a
+Redis-backed implementation.
 """
 from fastapi import APIRouter, Depends, HTTPException, Request, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from collections import defaultdict, deque
 import secrets
 import os
+import time
 import logging
 
 from database import get_db
@@ -27,58 +26,72 @@ router = APIRouter()
 
 RESET_TOKEN_EXPIRE_HOURS = 2
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-DISABLE_RATE_LIMIT = os.getenv("DISABLE_RATE_LIMIT", "false").lower() == "true"
-
-# ── Optional slowapi rate limiter ──────────────────────────────────────────────
-try:
-    from slowapi import Limiter
-    from slowapi.util import get_remote_address
-    _limiter = Limiter(key_func=get_remote_address)
-    _RATE_LIMIT = "10/minute"
-    HAS_LIMITER = True
-except ImportError:
-    _limiter = None
-    HAS_LIMITER = False
-    logger.warning(
-        "slowapi not installed — auth endpoints have NO rate limiting. "
-        "Add slowapi==0.1.9 to requirements.txt and mount the limiter in main.py."
-    )
 
 
-def _rate_limit(request: Request):
-    """Apply rate limiting when slowapi is available and not disabled."""
-    if HAS_LIMITER and not DISABLE_RATE_LIMIT and _limiter:
-        _limiter.limit(_RATE_LIMIT)(lambda r: None)(request)
+# ── Simple in-process rate limiter ────────────────────────────────────────────
+
+class _RateLimiter:
+    """
+    Sliding-window rate limiter keyed by IP.
+    Default: 10 requests per 60 seconds per IP.
+    Thread-safe enough for single-worker uvicorn; for multi-worker use Redis.
+    """
+    def __init__(self, max_calls: int = 10, period_seconds: int = 60):
+        self.max_calls = max_calls
+        self.period = period_seconds
+        self._calls: dict = defaultdict(deque)
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        window_start = now - self.period
+        q = self._calls[key]
+        # evict timestamps outside the window
+        while q and q[0] < window_start:
+            q.popleft()
+        if len(q) >= self.max_calls:
+            return False
+        q.append(now)
+        return True
+
+
+_limiter = _RateLimiter(max_calls=10, period_seconds=60)
+
+
+def _check_rate_limit(request: Request) -> None:
+    ip = request.client.host if request.client else "unknown"
+    if not _limiter.is_allowed(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait a minute and try again.",
+        )
 
 
 # ── Email stub ─────────────────────────────────────────────────────────────────
 
 def send_reset_email_bg(email: str, token: str, frontend_url: str):
     """
-    STUB — password reset emails are NOT sent in production yet.
+    STUB — password reset emails are NOT sent yet.
 
-    To make this work, integrate an email provider:
-      - SendGrid: pip install sendgrid, use sendgrid.SendGridAPIClient
-      - AWS SES:  pip install boto3,  use ses_client.send_email(...)
-      - Resend:   pip install resend,  use resend.Emails.send(...)
+    To enable real emails, integrate one of:
+      - Resend:   pip install resend  →  resend.Emails.send(...)
+      - SendGrid: pip install sendgrid
+      - AWS SES:  pip install boto3
 
-    Until then, the reset URL is logged to stdout (visible in Render logs).
-    This means password reset is OPERATOR-ASSISTED only.
+    Until then the reset URL is written to the Render log (operator-assisted reset).
     """
     reset_url = f"{frontend_url}/reset-password?token={token}"
     logger.warning(
-        "[EMAIL STUB] Password reset requested for %s. "
-        "No email was sent. Reset URL (visible in logs only): %s",
-        email, reset_url
+        "[EMAIL STUB] Password reset for %s — no email sent. "
+        "Reset URL (Render logs only): %s",
+        email, reset_url,
     )
-    # TODO: replace with real email send — remove the log line above when done
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.post("/signup", response_model=schemas.Token, status_code=201)
 async def signup(request: Request, payload: schemas.UserSignup, db: Session = Depends(get_db)):
-    _rate_limit(request)
+    _check_rate_limit(request)
     try:
         if db.query(models.User).filter(models.User.email == payload.email).first():
             raise HTTPException(status_code=400, detail="Email already registered")
@@ -111,7 +124,7 @@ async def signup(request: Request, payload: schemas.UserSignup, db: Session = De
 
 @router.post("/login", response_model=schemas.Token)
 async def login(request: Request, payload: schemas.UserLogin, db: Session = Depends(get_db)):
-    _rate_limit(request)
+    _check_rate_limit(request)
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -137,7 +150,7 @@ async def forgot_password(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    _rate_limit(request)
+    _check_rate_limit(request)
     user = db.query(models.User).filter(models.User.email == payload.email).first()
     if user:
         token = secrets.token_urlsafe(32)
@@ -146,7 +159,6 @@ async def forgot_password(
         db.commit()
         background_tasks.add_task(send_reset_email_bg, user.email, token, FRONTEND_URL)
 
-    # Always return the same message to avoid user enumeration
     return {"message": "If that email is registered, you'll receive a password reset link shortly."}
 
 
