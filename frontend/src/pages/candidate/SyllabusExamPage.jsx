@@ -70,8 +70,14 @@ export default function ExamPage() {
   const location = useLocation();
   const navigate  = useNavigate();
 
-  const { exam, sessionId: existingSessionId, candidateName } =
-    location.state || {};
+  // Support both location.state (programmatic nav) AND sessionStorage (SyllabusUpload → /exam/take)
+  const _stored = (() => {
+    try { return JSON.parse(sessionStorage.getItem('generatedExam') || 'null'); } catch { return null; }
+  })();
+  const _state = location.state || {};
+  const exam = _state.exam ?? (_stored ? { ..._stored } : null);
+  const existingSessionId = _state.sessionId ?? null;
+  const candidateName = _state.candidateName ?? null;
 
   const [sessionId,    setSessionId]    = useState(existingSessionId || null);
   const [questions,    setQuestions]    = useState([]);
@@ -468,3 +474,6 @@ export default function ExamPage() {
     </div>
   );
 }
+
+
+
