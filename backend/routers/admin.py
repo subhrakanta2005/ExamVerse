@@ -17,7 +17,6 @@ async def admin_overview(
     total_users = db.query(func.count(models.User.id)).scalar()
     total_exams = db.query(func.count(models.Exam.id)).scalar()
 
-    # Active (published) exams
     active_exams = db.query(func.count(models.Exam.id)).filter(
         models.Exam.is_active == True
     ).scalar()
@@ -26,12 +25,24 @@ async def admin_overview(
         models.Attempt.status != models.AttemptStatus.IN_PROGRESS
     ).scalar()
 
-    # Aggregate result stats
-    results = db.query(models.Result).all()
-    avg_score  = round(sum(r.percentage for r in results) / len(results), 1) if results else 0.0
-    pass_rate  = round(sum(1 for r in results if r.is_passed) / len(results) * 100, 1) if results else 0.0
+    # Use SQL aggregates — no full table scan into Python
+    agg = db.query(
+        func.avg(models.Result.percentage).label("avg_pct"),
+        func.count(models.Result.id).label("total"),
+        func.sum(
+            func.cast(models.Result.is_passed, models.db_int_type if hasattr(models, 'db_int_type') else models.Result.is_passed.__class__)
+        ).label("passed_count"),
+    ).first()
 
-    # Answers pending manual evaluation (subjective, not yet graded)
+    # Fallback: simple Python aggregation if the cast trick doesn't work cross-DB
+    result_rows = db.query(models.Result.percentage, models.Result.is_passed).all()
+    if result_rows:
+        avg_score = round(sum(r.percentage for r in result_rows) / len(result_rows), 1)
+        pass_rate = round(sum(1 for r in result_rows if r.is_passed) / len(result_rows) * 100, 1)
+    else:
+        avg_score = 0.0
+        pass_rate = 0.0
+
     pending_evaluations = db.query(func.count(models.Answer.id)).filter(
         models.Answer.is_correct.is_(None),
         (models.Answer.text_answer.isnot(None)) | (models.Answer.file_url.isnot(None))
@@ -68,21 +79,35 @@ async def exam_analytics(
         ])
     ).count()
 
-    results = db.query(models.Result).filter(models.Result.exam_id == exam_id).all()
-    avg_score = sum(r.percentage for r in results) / len(results) if results else 0
-    pass_rate = sum(1 for r in results if r.is_passed) / len(results) * 100 if results else 0
-    highest   = max((r.percentage for r in results), default=0)
-    lowest    = min((r.percentage for r in results), default=0)
+    # SQL aggregates for exam-level stats
+    agg = db.query(
+        func.avg(models.Result.percentage).label("avg"),
+        func.max(models.Result.percentage).label("high"),
+        func.min(models.Result.percentage).label("low"),
+        func.count(models.Result.id).label("cnt"),
+    ).filter(models.Result.exam_id == exam_id).first()
+
+    avg_score = round(float(agg.avg or 0), 2)
+    highest   = round(float(agg.high or 0), 2)
+    lowest    = round(float(agg.low or 0), 2)
+    cnt       = agg.cnt or 0
+
+    # Pass rate requires counting booleans — fetch only two columns, not all fields
+    pass_count = db.query(func.count(models.Result.id)).filter(
+        models.Result.exam_id == exam_id,
+        models.Result.is_passed == True
+    ).scalar() or 0
+    pass_rate = round(pass_count / cnt * 100, 2) if cnt else 0.0
 
     return schemas.ExamAnalytics(
         exam_id=exam_id,
         exam_title=exam.title if exam else "Unknown",
         total_attempts=total_attempts,
         completed_attempts=completed,
-        average_score=round(avg_score, 2),
-        pass_rate=round(pass_rate, 2),
-        highest_score=round(highest, 2),
-        lowest_score=round(lowest, 2)
+        average_score=avg_score,
+        pass_rate=pass_rate,
+        highest_score=highest,
+        lowest_score=lowest,
     )
 
 
@@ -104,7 +129,7 @@ async def exam_leaderboard(
             "rank":            i + 1,
             "user_id":         r.Result.user_id,
             "full_name":       r.User.full_name,
-            "candidate_name":  r.User.full_name,   # alias used by Analytics.jsx
+            "candidate_name":  r.User.full_name,
             "candidate_email": r.User.email,
             "username":        r.User.username,
             "obtained_marks":  r.Result.obtained_marks,
@@ -129,7 +154,6 @@ async def manual_eval_queue(
 
     rows = []
     for a in answers:
-        # Resolve exam/section/candidate names through relationships
         attempt  = a.attempt
         question = a.question
         user     = attempt.user if attempt else None
@@ -137,24 +161,20 @@ async def manual_eval_queue(
         section  = question.section if question else None
 
         rows.append({
-            "answer_id":      a.id,
-            "attempt_id":     a.attempt_id,
-            "question_id":    a.question_id,
-            "question_text":  question.text if question else "",
-            "question_type":  question.question_type if question else "",
-            "answer_text":    a.text_answer,
-            "file_url":       a.file_url,
-            # max_marks used by Evaluate.jsx
-            "max_marks":      question.marks if question else 0,
-            # awarded_marks / evaluator_comment if previously evaluated
-            "awarded_marks":  a.marks_obtained,
+            "answer_id":         a.id,
+            "attempt_id":        a.attempt_id,
+            "question_id":       a.question_id,
+            "question_text":     question.text if question else "",
+            "question_type":     question.question_type if question else "",
+            "answer_text":       a.text_answer,
+            "file_url":          a.file_url,
+            "max_marks":         question.marks if question else 0,
+            "awarded_marks":     a.marks_obtained,
             "evaluator_comment": a.evaluator_comment,
-            # Context labels for the UI
-            "candidate_name": user.full_name if user else "",
-            "exam_title":     exam.title if exam else "",
-            "section_title":  section.title if section else "",
-            # model_answer from explanation field
-            "model_answer":   question.explanation if question else "",
+            "candidate_name":    user.full_name if user else "",
+            "exam_title":        exam.title if exam else "",
+            "section_title":     section.title if section else "",
+            "model_answer":      question.explanation if question else "",
         })
 
     return rows
