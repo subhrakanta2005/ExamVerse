@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import AppLayout from '../../components/layout/AppLayout'
 import { examAPI } from '../../services/api'
+import useAuthStore from '../../store/authStore'
 import toast from 'react-hot-toast'
 
 export default function Exams() {
@@ -9,10 +10,19 @@ export default function Exams() {
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState(null)
   const navigate = useNavigate()
+  const location = useLocation()
+  const { isAdmin } = useAuthStore()
+  const admin = isAdmin()
+
+  // Show Edit/Delete only on the candidate /exams route, not on /admin/exams
+  const isCandidatePage = location.pathname === '/exams'
 
   const loadExams = () => {
     setLoading(true)
-    examAPI.getAvailable()
+    const req = admin && !isCandidatePage
+      ? examAPI.getAdminAll(0, 200)
+      : examAPI.getAvailable()
+    req
       .then(r => setExams(r.data || []))
       .catch(() => toast.error('Failed to load exams'))
       .finally(() => setLoading(false))
@@ -27,8 +37,8 @@ export default function Exams() {
       await examAPI.delete(exam.id)
       setExams(prev => prev.filter(e => e.id !== exam.id))
       toast.success('Exam deleted')
-    } catch {
-      toast.error('Failed to delete exam')
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Failed to delete exam')
     } finally {
       setDeleting(null)
     }
@@ -47,9 +57,17 @@ export default function Exams() {
           <div>
             <h1 className="text-2xl font-bold text-white">Exams</h1>
             <p className="text-slate-400 text-sm mt-0.5">
-              {exams.length} exam{exams.length !== 1 ? 's' : ''} available
+              {exams.length} exam{exams.length !== 1 ? 's' : ''}
             </p>
           </div>
+          {admin && !isCandidatePage && (
+            <button
+              onClick={() => navigate('/admin/exams/new')}
+              className="btn-primary"
+            >
+              + Create Exam
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -100,7 +118,7 @@ export default function Exams() {
                           : ''}
                       </td>
                       <td className="px-4 py-4">
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-3 flex-wrap">
                           <button
                             disabled={!live}
                             onClick={() => navigate(`/exam/${exam.id}/instructions`)}
@@ -108,19 +126,40 @@ export default function Exams() {
                           >
                             Start →
                           </button>
-                          <button
-                            onClick={() => navigate(`/exams/${exam.id}/edit`)}
-                            className="text-brand-400 hover:text-brand-300 text-sm font-medium transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDelete(exam)}
-                            disabled={deleting === exam.id}
-                            className="text-red-400 hover:text-red-300 text-sm font-medium transition-colors disabled:opacity-50"
-                          >
-                            {deleting === exam.id ? 'Deleting…' : 'Delete'}
-                          </button>
+                          {isCandidatePage && (
+                            <>
+                              <button
+                                onClick={() => navigate(`/exams/${exam.id}/edit`)}
+                                className="text-brand-400 hover:text-brand-300 text-sm font-medium transition-colors"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDelete(exam)}
+                                disabled={deleting === exam.id}
+                                className="text-red-400 hover:text-red-300 text-sm font-medium transition-colors disabled:opacity-50"
+                              >
+                                {deleting === exam.id ? 'Deleting…' : 'Delete'}
+                              </button>
+                            </>
+                          )}
+                          {!isCandidatePage && admin && (
+                            <>
+                              <button
+                                onClick={() => navigate(`/admin/exams/${exam.id}/edit`)}
+                                className="text-brand-400 hover:text-brand-300 text-sm font-medium transition-colors"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleDelete(exam)}
+                                disabled={deleting === exam.id}
+                                className="text-red-400 hover:text-red-300 text-sm font-medium transition-colors disabled:opacity-50"
+                              >
+                                {deleting === exam.id ? 'Deleting…' : 'Delete'}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
