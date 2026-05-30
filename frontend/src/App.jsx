@@ -73,7 +73,8 @@ export default function App() {
       <Route path="/exam/result"                      element={<CandidateRoute><SyllabusResultPage /></CandidateRoute>} />
 
       {/* Candidate — exam browsing, analytics, AI generator */}
-      <Route path="/exams"             element={<CandidateRoute><AdminExams /></CandidateRoute>} />
+      <Route path="/exams"                  element={<CandidateRoute><AdminExams /></CandidateRoute>} />
+      <Route path="/exams/:examId/edit"     element={<CandidateRoute><AdminExamEditor /></CandidateRoute>} />
       <Route path="/evaluate"          element={<CandidateRoute><AdminEvaluate /></CandidateRoute>} />
       <Route path="/analytics"         element={<CandidateRoute><AdminAnalytics /></CandidateRoute>} />
       <Route path="/ai-exam-generator" element={<CandidateRoute><SyllabusUpload /></CandidateRoute>} />
@@ -94,3 +95,22 @@ export default function App() {
     </Routes>
   )
 }
+
+
+
+================================================
+FILE: frontend/src/index.css
+================================================
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0b0f1a;
+    --bg-secondary: #111827;
+    --bg-card: #161d2f;
+    --bg-hover: #1e2640;
+    --border: #2d3652;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
