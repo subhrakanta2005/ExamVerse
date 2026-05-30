@@ -95,22 +95,3 @@ export default function App() {
     </Routes>
   )
 }
-
-
-
-================================================
-FILE: frontend/src/index.css
-================================================
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@layer base {
-  :root {
-    --bg-primary: #0b0f1a;
-    --bg-secondary: #111827;
-    --bg-card: #161d2f;
-    --bg-hover: #1e2640;
-    --border: #2d3652;
-    --text-primary: #e2e8f0;
-    --text-secondary: #94a3b8;
