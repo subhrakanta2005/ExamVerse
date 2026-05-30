@@ -224,7 +224,10 @@ export default function SyllabusUpload() {
       clearInterval(ticker);
       setProgress(100);
       setResult(data);
-      setStep("done");
+      // Auto-save to database immediately after generation
+      setStep("importing");
+      // Use a ref-like approach: pass data directly to avoid stale closure
+      await handleImportData(data);
     } catch (err) {
       clearInterval(ticker);
       setProgress(0);
@@ -245,12 +248,12 @@ export default function SyllabusUpload() {
   };
 
   // ── Import ──────────────────────────────────────────────────────────────────
-  const handleImport = async () => {
-    if (!result?.exam) return;
+  const handleImportData = async (examData_) => {
+    const examData = examData_?.exam || examData_;
+    if (!examData) return;
     setStep("importing");
 
     try {
-      const examData = result.exam;
       const allQuestions = (examData.sections || []).flatMap(s => s.questions || []);
       const total = allQuestions.length;
       setImportProgress({ current: 0, total, label: "Creating exam…" });
@@ -328,14 +331,16 @@ export default function SyllabusUpload() {
       setImportProgress({ current: total, total, label: "Done!" });
       setImportedExamId(examId);
       setStep("imported");
-      toast.success(`Exam imported! ${total} questions saved.`);
+      toast.success(`Exam saved! ${total} questions added to database.`);
     } catch (err) {
       console.error("Import error:", err);
-      setErrorMsg(err?.response?.data?.detail || "Import failed. Please try again.");
+      setErrorMsg(err?.response?.data?.detail || "Save failed. Please try again.");
       setStep("done");
-      toast.error("Import failed — see error above.");
+      toast.error("Save failed — see error above.");
     }
   };
+
+  const handleImport = () => handleImportData(result?.exam ? result : result);
 
   const reset = () => {
     setStep("upload");
@@ -384,7 +389,7 @@ export default function SyllabusUpload() {
               <p className="text-emerald-100 text-sm">Live and visible to candidates immediately</p>
             </div>
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate(`/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
                 Edit Exam <ArrowRightIcon />
               </button>
               <button onClick={() => navigate(admin ? "/admin/exams" : "/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">

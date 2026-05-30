@@ -2,27 +2,23 @@ import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppLayout from '../../components/layout/AppLayout'
 import { examAPI } from '../../services/api'
-import useAuthStore from '../../store/authStore'
 import toast from 'react-hot-toast'
 
-export default function AdminExams() {
+export default function Exams() {
   const [exams, setExams] = useState([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState(null)
   const navigate = useNavigate()
-  const { isAdmin } = useAuthStore()
-  const admin = isAdmin()
 
   const loadExams = () => {
     setLoading(true)
-    const fetch = admin ? examAPI.getAdminAll(0, 200) : examAPI.getAvailable()
-    fetch
+    examAPI.getAvailable()
       .then(r => setExams(r.data || []))
       .catch(() => toast.error('Failed to load exams'))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { loadExams() }, []) // eslint-disable-line
+  useEffect(() => { loadExams() }, [])
 
   const handleDelete = async (exam) => {
     if (!window.confirm(`Delete "${exam.title}"? This cannot be undone.`)) return
@@ -44,10 +40,6 @@ export default function AdminExams() {
     (!exam.start_time || new Date(exam.start_time) <= now) &&
     (!exam.end_time   || new Date(exam.end_time)   >= now)
 
-  const columns = admin
-    ? ['Title', 'Duration', 'Marks', 'Questions', 'Status', 'Window', 'Actions']
-    : ['Title', 'Duration', 'Marks', 'Questions', 'Status', 'Window', '']
-
   return (
     <AppLayout>
       <div className="max-w-6xl mx-auto space-y-6">
@@ -55,17 +47,9 @@ export default function AdminExams() {
           <div>
             <h1 className="text-2xl font-bold text-white">Exams</h1>
             <p className="text-slate-400 text-sm mt-0.5">
-              {exams.length} exam{exams.length !== 1 ? 's' : ''}{admin ? ' (admin view)' : ' available'}
+              {exams.length} exam{exams.length !== 1 ? 's' : ''} available
             </p>
           </div>
-          {admin && (
-            <button
-              onClick={() => navigate('/admin/exams/new')}
-              className="btn-primary"
-            >
-              + New Exam
-            </button>
-          )}
         </div>
 
         {loading ? (
@@ -76,24 +60,14 @@ export default function AdminExams() {
           <div className="glass-card p-16 text-center">
             <div className="text-5xl mb-4">◈</div>
             <h3 className="text-lg font-semibold text-white mb-2">No exams available</h3>
-            <p className="text-slate-400">
-              {admin ? 'Create your first exam to get started.' : 'Check back later or contact your administrator.'}
-            </p>
-            {admin && (
-              <button
-                onClick={() => navigate('/admin/exams/new')}
-                className="btn-primary mt-4"
-              >
-                + Create Exam
-              </button>
-            )}
+            <p className="text-slate-400">Check back later or use the AI Exam Generator to create one.</p>
           </div>
         ) : (
           <div className="glass-card overflow-hidden">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-slate-800">
-                  {columns.map(h => (
+                  {['Title', 'Duration', 'Marks', 'Questions', 'Status', 'Window', 'Actions'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">{h}</th>
                   ))}
                 </tr>
@@ -126,32 +100,28 @@ export default function AdminExams() {
                           : ''}
                       </td>
                       <td className="px-4 py-4">
-                        {admin ? (
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => navigate(`/admin/exams/${exam.id}/edit`)}
-                              className="text-brand-400 hover:text-brand-300 text-sm font-medium transition-colors"
-                            >
-                              Edit
-                            </button>
-                            <span className="text-slate-700">|</span>
-                            <button
-                              onClick={() => handleDelete(exam)}
-                              disabled={deleting === exam.id}
-                              className="text-red-400 hover:text-red-300 text-sm font-medium transition-colors disabled:opacity-50"
-                            >
-                              {deleting === exam.id ? 'Deleting…' : 'Delete'}
-                            </button>
-                          </div>
-                        ) : (
+                        <div className="flex items-center gap-2 flex-wrap">
                           <button
                             disabled={!live}
                             onClick={() => navigate(`/exam/${exam.id}/instructions`)}
-                            className="btn-primary text-sm py-1.5 px-4 disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="btn-primary text-sm py-1.5 px-3 disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             Start →
                           </button>
-                        )}
+                          <button
+                            onClick={() => navigate(`/exams/${exam.id}/edit`)}
+                            className="text-brand-400 hover:text-brand-300 text-sm font-medium transition-colors"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(exam)}
+                            disabled={deleting === exam.id}
+                            className="text-red-400 hover:text-red-300 text-sm font-medium transition-colors disabled:opacity-50"
+                          >
+                            {deleting === exam.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
