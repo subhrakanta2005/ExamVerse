@@ -20,13 +20,24 @@ def get_exam_or_404(exam_id: int, db: Session) -> models.Exam:
     return exam
 
 
-# ── Admin: Create exam ───────────────────────────────────────────────────────
+def _check_exam_ownership(exam_id: int, current_user: models.User, db: Session) -> models.Exam:
+    """Allow admin OR the exam's creator to modify the exam."""
+    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    is_admin = current_user.role == models.UserRole.ADMIN
+    if not is_admin and exam.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorised to modify this exam")
+    return exam
+
+
+# ── Create exam (any authenticated user) ─────────────────────────────────────
 
 @router.post("/", response_model=schemas.ExamOut, status_code=201)
 async def create_exam(
     payload: schemas.ExamCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
     exam = models.Exam(**payload.dict(), created_by=current_user.id)
     db.add(exam)
@@ -40,19 +51,16 @@ async def update_exam(
     exam_id: int,
     payload: schemas.ExamUpdate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Exam not found")
+    exam = _check_exam_ownership(exam_id, current_user, db)
     for key, value in payload.dict(exclude_unset=True).items():
         setattr(exam, key, value)
     db.commit()
     return get_exam_or_404(exam_id, db)
 
 
-# ── Admin: Delete exam (cascade-safe via raw SQL) ────────────────────────────
-# Single DELETE route — uses raw SQL to avoid FK violations from attempts/answers
+# ── Delete exam (cascade-safe via raw SQL) ───────────────────────────────────
 
 @router.delete("/{exam_id}")
 async def delete_exam(
@@ -64,7 +72,6 @@ async def delete_exam(
     if not exists:
         raise HTTPException(status_code=404, detail="Exam not found")
 
-    # Allow admin OR the exam's creator
     is_admin = current_user.role == models.UserRole.ADMIN
     is_creator = exists.created_by == current_user.id
     if not is_admin and not is_creator:
@@ -99,18 +106,16 @@ async def delete_exam(
     return {"message": "Exam deleted"}
 
 
-# ── Admin: Sections ──────────────────────────────────────────────────────────
+# ── Sections ─────────────────────────────────────────────────────────────────
 
 @router.post("/{exam_id}/sections", response_model=schemas.SectionOut, status_code=201)
 async def add_section(
     exam_id: int,
     payload: schemas.SectionCreate,
     db: Session = Depends(get_db),
-    _: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
-    exam = db.query(models.Exam).filter(models.Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Exam not found")
+    _check_exam_ownership(exam_id, current_user, db)
     section = models.Section(exam_id=exam_id, **payload.dict())
     db.add(section)
     db.commit()
@@ -123,8 +128,9 @@ async def delete_section(
     exam_id: int,
     section_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
+    _check_exam_ownership(exam_id, current_user, db)
     section = db.query(models.Section).filter(
         models.Section.id == section_id,
         models.Section.exam_id == exam_id
@@ -234,15 +240,17 @@ async def get_exam_for_candidate(
     return exam
 
 
-# ── Admin: Get exam with answers ─────────────────────────────────────────────
+# ── Get exam detail (admin/owner — includes answers) ─────────────────────────
 
 @router.get("/{exam_id}", response_model=schemas.ExamOut)
 async def get_exam(
     exam_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
-    return get_exam_or_404(exam_id, db)
-
-
-
+    exam = get_exam_or_404(exam_id, db)
+    # Allow admin or the exam creator to see full detail
+    is_admin = current_user.role == models.UserRole.ADMIN
+    if not is_admin and exam.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorised")
+    return exam
