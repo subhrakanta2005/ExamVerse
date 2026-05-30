@@ -4,16 +4,21 @@ import useAuthStore from '../../store/authStore'
 import clsx from 'clsx'
 
 const candidateNav = [
-  { path: '/dashboard',          label: 'Dashboard',       icon: '▦', exact: true },
-  { path: '/exams',              label: 'Exams',            icon: '◈' },
-  { path: '/history',            label: 'Results',          icon: '◎' },
-  { path: '/evaluate',           label: 'Evaluate',         icon: '◐' },
-  { path: '/analytics',          label: 'Analytics',        icon: '◭' },
-  { path: '/ai-exam-generator',  label: 'AI Exam Generator',icon: '✨' },
+  { path: '/dashboard',  label: 'Dashboard', icon: '▦', exact: true },
+  { path: '/exams',      label: 'Exams',     icon: '◈' },
+  { path: '/history',    label: 'Results',   icon: '◎' },
+  { path: '/evaluate',   label: 'Evaluate',  icon: '◐' },
+  { path: '/analytics',  label: 'Analytics', icon: '◭' },
 ]
 
 const adminNav = [
-  { path: '/admin', label: 'Users', icon: '◉', exact: true },
+  { path: '/admin',                   label: 'Dashboard',        icon: '▦', exact: true },
+  { path: '/admin/exams',             label: 'Exams',            icon: '◈' },
+  { path: '/admin/results',           label: 'Results',          icon: '◎' },
+  { path: '/admin/evaluate',          label: 'Evaluate',         icon: '◐' },
+  { path: '/admin/analytics',         label: 'Analytics',        icon: '◭' },
+  { path: '/admin/ai-exam-generator', label: 'AI Exam Generator',icon: '✨' },
+  { path: '/admin/users',             label: 'Users',            icon: '◉' },
 ]
 
 export default function AppLayout({ children }) {
@@ -42,8 +47,8 @@ export default function AppLayout({ children }) {
       )}>
         {/* Logo */}
         <div className="flex items-center gap-3 px-6 py-5 border-b border-slate-800">
-          <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center text-white font-display font-bold text-sm">EF</div>
-          <span className="font-display font-bold text-lg text-white tracking-tight">ExamForge</span>
+          <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center text-white font-display font-bold text-sm">EV</div>
+          <span className="font-display font-bold text-lg text-white tracking-tight">ExamVerse</span>
         </div>
 
         {/* Role badge */}
