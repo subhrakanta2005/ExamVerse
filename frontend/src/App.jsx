@@ -72,10 +72,11 @@ export default function App() {
       <Route path="/exam/take"                        element={<CandidateRoute><SyllabusExamPage /></CandidateRoute>} />
       <Route path="/exam/result"                      element={<CandidateRoute><SyllabusResultPage /></CandidateRoute>} />
 
-      {/* Candidate — exam browsing & analytics */}
-      <Route path="/exams"     element={<CandidateRoute><AdminExams /></CandidateRoute>} />
-      <Route path="/evaluate"  element={<CandidateRoute><AdminEvaluate /></CandidateRoute>} />
-      <Route path="/analytics" element={<CandidateRoute><AdminAnalytics /></CandidateRoute>} />
+      {/* Candidate — exam browsing, analytics, AI generator */}
+      <Route path="/exams"             element={<CandidateRoute><AdminExams /></CandidateRoute>} />
+      <Route path="/evaluate"          element={<CandidateRoute><AdminEvaluate /></CandidateRoute>} />
+      <Route path="/analytics"         element={<CandidateRoute><AdminAnalytics /></CandidateRoute>} />
+      <Route path="/ai-exam-generator" element={<CandidateRoute><SyllabusUpload /></CandidateRoute>} />
 
       {/* Admin-only routes */}
       <Route path="/admin"                        element={<AdminRoute><AdminDashboard /></AdminRoute>} />
