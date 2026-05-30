@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import api, { examAPI, questionAPI } from "../../services/api";
+import useAuthStore from "../../store/authStore";
 import toast from "react-hot-toast";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -94,6 +95,8 @@ async function extractTextFromPDF(file) {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function SyllabusUpload() {
   const navigate = useNavigate();
+  const { isAdmin } = useAuthStore();
+  const admin = isAdmin();
   const fileInputRef = useRef(null);
 
   const [file, setFile] = useState(null);
@@ -362,7 +365,7 @@ export default function SyllabusUpload() {
             </div>
           </div>
           <button
-            onClick={() => navigate("/dashboard")}
+            onClick={() => navigate(admin ? "/admin" : "/dashboard")}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors border border-gray-200"
           >
             ← Back to Dashboard
@@ -381,10 +384,10 @@ export default function SyllabusUpload() {
               <p className="text-emerald-100 text-sm">Live and visible to candidates immediately</p>
             </div>
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button onClick={() => navigate(`/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
                 Edit Exam <ArrowRightIcon />
               </button>
-              <button onClick={() => navigate("/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate(admin ? "/admin/exams" : "/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
               <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
@@ -479,7 +482,7 @@ export default function SyllabusUpload() {
               >
                 ▶ Take This Exam Now
               </button>
-              <button onClick={() => navigate("/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate(admin ? "/admin/exams" : "/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
               <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
@@ -689,5 +692,8 @@ export default function SyllabusUpload() {
     </div>
   );
 }
+
+
+
 
 
