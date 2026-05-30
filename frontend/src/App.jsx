@@ -17,10 +17,9 @@ import AttemptHistory from './pages/candidate/AttemptHistory'
 import SyllabusExamPage   from './pages/candidate/SyllabusExamPage'
 import SyllabusResultPage from './pages/candidate/SyllabusResultPage'
 
-// Admin pages  (only Users remains in admin)
+// Admin pages
+import AdminDashboard from './pages/admin/Dashboard'
 import AdminUsers from './pages/admin/Users'
-
-// Pages moved to candidate routes
 import AdminExams from './pages/admin/Exams'
 import AdminExamEditor from './pages/admin/ExamEditor'
 import AdminResults from './pages/admin/Results'
@@ -73,16 +72,21 @@ export default function App() {
       <Route path="/exam/take"                        element={<CandidateRoute><SyllabusExamPage /></CandidateRoute>} />
       <Route path="/exam/result"                      element={<CandidateRoute><SyllabusResultPage /></CandidateRoute>} />
 
-      {/* Candidate — moved from admin */}
-      <Route path="/exams"              element={<CandidateRoute><AdminExams /></CandidateRoute>} />
-      <Route path="/exams/new"          element={<CandidateRoute><AdminExamEditor /></CandidateRoute>} />
-      <Route path="/exams/:examId/edit" element={<CandidateRoute><AdminExamEditor /></CandidateRoute>} />
-      <Route path="/evaluate"           element={<CandidateRoute><AdminEvaluate /></CandidateRoute>} />
-      <Route path="/analytics"          element={<CandidateRoute><AdminAnalytics /></CandidateRoute>} />
-      <Route path="/ai-exam-generator"  element={<CandidateRoute><SyllabusUpload /></CandidateRoute>} />
+      {/* Candidate — exam browsing & analytics */}
+      <Route path="/exams"     element={<CandidateRoute><AdminExams /></CandidateRoute>} />
+      <Route path="/evaluate"  element={<CandidateRoute><AdminEvaluate /></CandidateRoute>} />
+      <Route path="/analytics" element={<CandidateRoute><AdminAnalytics /></CandidateRoute>} />
 
-      {/* Admin — Users only */}
-      <Route path="/admin" element={<AdminRoute><AdminUsers /></AdminRoute>} />
+      {/* Admin-only routes */}
+      <Route path="/admin"                        element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      <Route path="/admin/users"                  element={<AdminRoute><AdminUsers /></AdminRoute>} />
+      <Route path="/admin/exams"                  element={<AdminRoute><AdminExams /></AdminRoute>} />
+      <Route path="/admin/exams/new"              element={<AdminRoute><AdminExamEditor /></AdminRoute>} />
+      <Route path="/admin/exams/:examId/edit"     element={<AdminRoute><AdminExamEditor /></AdminRoute>} />
+      <Route path="/admin/results"                element={<AdminRoute><AdminResults /></AdminRoute>} />
+      <Route path="/admin/evaluate"               element={<AdminRoute><AdminEvaluate /></AdminRoute>} />
+      <Route path="/admin/analytics"              element={<AdminRoute><AdminAnalytics /></AdminRoute>} />
+      <Route path="/admin/ai-exam-generator"      element={<AdminRoute><SyllabusUpload /></AdminRoute>} />
 
       {/* 404 */}
       <Route path="*" element={<Navigate to="/" replace />} />
