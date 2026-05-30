@@ -4,18 +4,16 @@ import useAuthStore from '../../store/authStore'
 import clsx from 'clsx'
 
 const candidateNav = [
-  { path: '/dashboard', label: 'Dashboard', icon: '▦' },
-  { path: '/history', label: 'My Results', icon: '◎' },
+  { path: '/dashboard',          label: 'Dashboard',       icon: '▦', exact: true },
+  { path: '/exams',              label: 'Exams',            icon: '◈' },
+  { path: '/history',            label: 'Results',          icon: '◎' },
+  { path: '/evaluate',           label: 'Evaluate',         icon: '◐' },
+  { path: '/analytics',          label: 'Analytics',        icon: '◭' },
+  { path: '/ai-exam-generator',  label: 'AI Exam Generator',icon: '✨' },
 ]
 
 const adminNav = [
-  { path: '/admin', label: 'Overview', icon: '▦', exact: true },
-  { path: '/admin/exams', label: 'Exams', icon: '◈' },
-  { path: '/admin/users', label: 'Users', icon: '◉' },
-  { path: '/admin/results', label: 'Results', icon: '◎' },
-  { path: '/admin/evaluate', label: 'Evaluate', icon: '◐' },
-  { path: '/admin/analytics', label: 'Analytics', icon: '◭' },
-  { path: '/admin/syllabus', label: 'AI Exam Generator', icon: '✨' },
+  { path: '/admin', label: 'Users', icon: '◉', exact: true },
 ]
 
 export default function AppLayout({ children }) {
