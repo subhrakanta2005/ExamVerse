@@ -304,7 +304,8 @@ export default function ExamPage() {
           </div>
 
           {/* ── MCQ options ────────────────────────────────────────────── */}
-          {currentQ.question_type === "mcq" && (
+          {(currentQ.question_type === "mcq_single" || currentQ.question_type === "mcq" ||
+            currentQ.question_type === "mcq_multiple" || currentQ.question_type === "mcq_multi") && (
             <div className="space-y-3">
               {currentQ.options?.map((opt, i) => {
                 let style = "bg-white border-slate-200 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50";
