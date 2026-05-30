@@ -58,11 +58,17 @@ async def update_exam(
 async def delete_exam(
     exam_id: int,
     db: Session = Depends(get_db),
-    _: models.User = Depends(get_current_admin)
+    current_user: models.User = Depends(get_current_user)
 ):
-    exists = db.execute(text("SELECT id FROM exams WHERE id = :eid"), {"eid": exam_id}).first()
+    exists = db.execute(text("SELECT id, created_by FROM exams WHERE id = :eid"), {"eid": exam_id}).first()
     if not exists:
         raise HTTPException(status_code=404, detail="Exam not found")
+
+    # Allow admin OR the exam's creator
+    is_admin = current_user.role == models.UserRole.ADMIN
+    is_creator = exists.created_by == current_user.id
+    if not is_admin and not is_creator:
+        raise HTTPException(status_code=403, detail="Not authorised to delete this exam")
 
     try:
         db.execute(
@@ -237,3 +243,6 @@ async def get_exam(
     _: models.User = Depends(get_current_admin)
 ):
     return get_exam_or_404(exam_id, db)
+
+
+
