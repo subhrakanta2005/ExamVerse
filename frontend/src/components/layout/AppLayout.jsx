@@ -4,11 +4,12 @@ import useAuthStore from '../../store/authStore'
 import clsx from 'clsx'
 
 const candidateNav = [
-  { path: '/dashboard',  label: 'Dashboard', icon: '▦', exact: true },
-  { path: '/exams',      label: 'Exams',     icon: '◈' },
-  { path: '/history',    label: 'Results',   icon: '◎' },
-  { path: '/evaluate',   label: 'Evaluate',  icon: '◐' },
-  { path: '/analytics',  label: 'Analytics', icon: '◭' },
+  { path: '/dashboard',          label: 'Dashboard',        icon: '▦', exact: true },
+  { path: '/exams',              label: 'Exams',            icon: '◈' },
+  { path: '/history',            label: 'Results',          icon: '◎' },
+  { path: '/evaluate',           label: 'Evaluate',         icon: '◐' },
+  { path: '/analytics',          label: 'Analytics',        icon: '◭' },
+  { path: '/ai-exam-generator',  label: 'AI Exam Generator',icon: '✨' },
 ]
 
 const adminNav = [
