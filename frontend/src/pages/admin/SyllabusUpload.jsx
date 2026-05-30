@@ -362,7 +362,7 @@ export default function SyllabusUpload() {
             </div>
           </div>
           <button
-            onClick={() => navigate("/admin")}
+            onClick={() => navigate("/dashboard")}
             className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors border border-gray-200"
           >
             ← Back to Dashboard
@@ -381,10 +381,10 @@ export default function SyllabusUpload() {
               <p className="text-emerald-100 text-sm">Live and visible to candidates immediately</p>
             </div>
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button onClick={() => navigate(`/admin/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate(`/exams/${importedExamId}/edit`)} className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
                 Edit Exam <ArrowRightIcon />
               </button>
-              <button onClick={() => navigate("/admin/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate("/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
               <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
@@ -424,7 +424,7 @@ export default function SyllabusUpload() {
             <div className="bg-gradient-to-r from-indigo-600 to-violet-600 px-8 py-10 text-white text-center">
               <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4"><CheckIcon /></div>
               <h2 className="text-2xl font-bold mb-1">Exam Generated!</h2>
-              <p className="text-indigo-200 text-sm">Preview below — click "Save to Database" to make it live</p>
+              <p className="text-indigo-200 text-sm">Preview below — click "Take This Exam Now" to start immediately</p>
             </div>
             {errorMsg && (
               <div className="mx-8 mt-6 flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">
@@ -468,10 +468,18 @@ export default function SyllabusUpload() {
               </div>
             )}
             <div className="p-8 flex flex-col sm:flex-row gap-3">
-              <button onClick={handleImport} className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
-                <ImportIcon /> Save to Database
+              <button
+                onClick={() => {
+                  if (result?.exam) {
+                    sessionStorage.setItem('generatedExam', JSON.stringify(result.exam));
+                    navigate('/exam/take');
+                  }
+                }}
+                className="flex-1 flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors"
+              >
+                ▶ Take This Exam Now
               </button>
-              <button onClick={() => navigate("/admin/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
+              <button onClick={() => navigate("/exams")} className="flex-1 flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 px-6 rounded-xl transition-colors">
                 All Exams
               </button>
               <button onClick={reset} className="flex-1 flex items-center justify-center gap-2 border border-gray-200 hover:bg-gray-50 text-gray-600 font-semibold py-3 px-6 rounded-xl transition-colors">
@@ -681,3 +689,5 @@ export default function SyllabusUpload() {
     </div>
   );
 }
+
+
