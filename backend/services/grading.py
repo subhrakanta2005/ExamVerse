@@ -4,14 +4,22 @@ import models
 
 
 def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
-    """Auto-grade objective questions. Subjective questions remain pending."""
+    """Auto-grade objective questions. Subjective questions remain pending.
+
+    Negative-mark policy (consistent):
+    - answer.marks_obtained stores the RAW value (can be negative).
+    - obtained_marks accumulates the raw value.
+    - result.obtained_marks and result.percentage are clamped to 0 at the end
+      so a candidate's total never goes below 0, but every individual answer
+      faithfully reflects the deduction.
+    """
     attempt = db.query(models.Attempt).filter(models.Attempt.id == attempt_id).first()
     if not attempt:
         raise ValueError(f"Attempt {attempt_id} not found")
-    
+
     exam = attempt.exam
     answers = {a.question_id: a for a in attempt.answers}
-    
+
     total_marks = 0.0
     obtained_marks = 0.0
     correct_count = 0
@@ -44,7 +52,7 @@ def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
                 if is_correct:
                     marks = question.marks
                 elif selected:
-                    marks = -question.negative_marks if exam.negative_marking else 0
+                    marks = -question.negative_marks if exam.negative_marking else 0.0
 
             elif q_type == models.QuestionType.MCQ_MULTI:
                 correct_opts = {o.id for o in question.options if o.is_correct}
@@ -53,14 +61,14 @@ def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
                 if is_correct:
                     marks = question.marks
                 elif selected:
-                    marks = -question.negative_marks if exam.negative_marking else 0
+                    marks = -question.negative_marks if exam.negative_marking else 0.0
 
             elif q_type == models.QuestionType.TRUE_FALSE:
                 correct_opts = {o.id for o in question.options if o.is_correct}
                 selected = set(answer.selected_option_ids or [])
                 is_correct = selected == correct_opts
                 marks = question.marks if is_correct else (
-                    -question.negative_marks if exam.negative_marking and selected else 0
+                    -question.negative_marks if exam.negative_marking and selected else 0.0
                 )
 
             elif q_type == models.QuestionType.NUMERIC:
@@ -70,7 +78,7 @@ def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
                         expected = float(correct_opts[0].text)
                         is_correct = abs(answer.numeric_answer - expected) < 0.001
                         marks = question.marks if is_correct else (
-                            -question.negative_marks if exam.negative_marking else 0
+                            -question.negative_marks if exam.negative_marking else 0.0
                         )
                     except ValueError:
                         needs_manual = True
@@ -79,7 +87,7 @@ def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
                 correct_opts = [o for o in question.options if o.is_correct]
                 if correct_opts and answer.text_answer:
                     is_correct = answer.text_answer.strip().lower() == correct_opts[0].text.strip().lower()
-                    marks = question.marks if is_correct else 0
+                    marks = question.marks if is_correct else 0.0
 
             elif q_type in (
                 models.QuestionType.SHORT_ANSWER,
@@ -88,42 +96,42 @@ def auto_grade_attempt(attempt_id: int, db: Session) -> models.Result:
                 models.QuestionType.MATCH,
                 models.QuestionType.ASSERTION_REASON,
             ):
-                # Mark for manual evaluation
                 needs_manual = True
                 answer.is_correct = None
                 db.add(answer)
                 continue
 
+            # Store raw marks (may be negative) — consistent with running total
             answer.is_correct = is_correct
-            answer.marks_obtained = max(0.0, marks) if marks < 0 else marks
-            # Allow negative for scoring
+            answer.marks_obtained = marks  # raw, can be negative
+
             if is_correct:
                 correct_count += 1
                 obtained_marks += marks
                 sec_obtained += marks
-            elif is_correct is False and answer.selected_option_ids:
+            elif is_correct is False and (answer.selected_option_ids or answer.numeric_answer is not None):
                 incorrect_count += 1
-                obtained_marks += marks  # negative
+                obtained_marks += marks  # adds negative deduction
                 sec_obtained += marks
-            
+
             db.add(answer)
 
         section_scores[str(section.id)] = {
             "title": section.title,
             "total": sec_total,
-            "obtained": sec_obtained
+            "obtained": sec_obtained,
         }
 
-    percentage = (obtained_marks / total_marks * 100) if total_marks > 0 else 0
+    percentage = (obtained_marks / total_marks * 100) if total_marks > 0 else 0.0
     is_passed = percentage >= exam.pass_percentage
 
-    # Create or update result
     result = db.query(models.Result).filter(models.Result.attempt_id == attempt_id).first()
     if not result:
         result = models.Result(attempt_id=attempt_id, user_id=attempt.user_id, exam_id=attempt.exam_id)
         db.add(result)
 
     result.total_marks = total_marks
+    # Clamp total at 0 — a candidate's score can't be negative overall
     result.obtained_marks = max(0.0, obtained_marks)
     result.percentage = max(0.0, percentage)
     result.is_passed = is_passed
