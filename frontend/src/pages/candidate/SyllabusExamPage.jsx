@@ -447,27 +447,66 @@ export default function ExamPage() {
             <p className="mt-3 text-sm text-red-600 text-center">{error}</p>
           )}
 
-          {/* ── Question navigator dots ───────────────────────────────── */}
-          <div className="mt-8 flex flex-wrap gap-2 justify-center">
-            {questions.map((_, i) => {
+          {/* ── Question navigator ───────────────────────────────────── */}
+          {(() => {
+            const total = questions.length;
+            // For small exams show all dots; for large exams show a windowed strip
+            const WINDOW = 5; // questions on each side of current
+            const getVisible = () => {
+              if (total <= 20) return questions.map((_, i) => i);
+              const indices = new Set();
+              // always show first 2 and last 2
+              [0, 1, total - 2, total - 1].forEach(i => { if (i >= 0 && i < total) indices.add(i); });
+              // window around current
+              for (let i = Math.max(0, currentIdx - WINDOW); i <= Math.min(total - 1, currentIdx + WINDOW); i++) {
+                indices.add(i);
+              }
+              return [...indices].sort((a, b) => a - b);
+            };
+            const visible = getVisible();
+
+            const dotClass = (i) => {
               const isDone    = answered[i] !== undefined;
               const isCurrent = i === currentIdx;
-              return (
+              if (isCurrent)                         return "bg-indigo-600 text-white ring-2 ring-indigo-300 ring-offset-1";
+              if (isDone && answered[i]?.is_correct) return "bg-emerald-500 text-white";
+              if (isDone)                            return "bg-red-400 text-white";
+              return "bg-slate-200 text-slate-500";
+            };
+
+            const dots = [];
+            let prevIdx = -1;
+            for (const i of visible) {
+              if (prevIdx !== -1 && i > prevIdx + 1) {
+                dots.push(
+                  <span key={`gap-${i}`} className="text-slate-400 text-xs self-center px-0.5">…</span>
+                );
+              }
+              dots.push(
                 <div
                   key={i}
                   title={`Q${i + 1}`}
-                  className={`w-7 h-7 rounded-full text-xs font-semibold flex items-center justify-center
-                    transition-all
-                    ${isCurrent  ? "bg-indigo-600 text-white ring-2 ring-indigo-300 ring-offset-1" :
-                      isDone && answered[i]?.is_correct ? "bg-emerald-500 text-white" :
-                      isDone     ? "bg-red-400 text-white" :
-                                   "bg-slate-200 text-slate-500"}`}
+                  className={`w-7 h-7 rounded-full text-xs font-semibold flex items-center justify-center transition-all cursor-default ${dotClass(i)}`}
                 >
                   {i + 1}
                 </div>
               );
-            })}
-          </div>
+              prevIdx = i;
+            }
+
+            return (
+              <div className="mt-8">
+                <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                  {dots}
+                </div>
+                {total > 20 && (
+                  <p className="text-center text-xs text-slate-400 mt-2">
+                    {Object.keys(answered).length} / {total} answered
+                  </p>
+                )}
+              </div>
+            );
+          })()}
 
         </div>
       </main>
